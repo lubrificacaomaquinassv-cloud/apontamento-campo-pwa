@@ -1,1 +1,110 @@
+@import url("https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700&display=swap");
+
+:root {
+  --bg: #0a1409;
+  --surface: #111c10;
+  --border: #1e2e1c;
+  --text: #e8edd0;
+  --muted: #8aab80;
+  --accent: #4a9e3f;
+  --accent-light: #6fcf60;
+  --field-bg: #dce6d2;
+  --field-text: #1a2818;
+  --warn: #d4a017;
+  --danger: #c0392b;
+  --highlight: #1a3d22;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body {
+  margin: 0; padding: 0; background: var(--bg); color: var(--text);
+  font-family: "Barlow Condensed", system-ui, sans-serif; min-height: 100vh;
+}
+.app { max-width: 480px; margin: 0 auto; padding: 12px 14px 28px; }
+.hidden { display: none !important; }
+
+.header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.logo {
+  width: 72px; height: 72px; flex-shrink: 0;
+  background: transparent;
+  border-radius: 10px; padding: 0; border: 2px solid #c9a227;
+  overflow: hidden;
+}
+.logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.header h1 { margin: 0; font-size: 20px; }
+.header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; text-transform: uppercase; }
+
+.status-bar {
+  display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; color: var(--muted);
+  margin-bottom: 12px; padding: 8px 10px; background: var(--surface);
+  border-radius: 10px; border: 1px solid var(--border);
+}
+.status-bar .ok { color: var(--accent-light); }
+.status-bar .warn { color: var(--warn); }
+
+.offline-banner {
+  padding: 10px 12px; margin-bottom: 14px; background: #2a2210;
+  border: 1px solid var(--warn); border-radius: 10px; font-size: 14px; color: #f0e6c8;
+}
+
+.sec {
+  font-size: 11px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--muted); border-left: 4px solid var(--accent); padding-left: 10px;
+  margin: 18px 0 10px;
+}
+.field { margin-bottom: 12px; }
+.field label {
+  display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px;
+  text-transform: uppercase; letter-spacing: 1px;
+}
+.field input, .field select, .field textarea {
+  width: 100%; padding: 14px 12px; font-size: 18px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--field-bg); color: var(--field-text);
+  font-family: inherit;
+}
+.field-hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+.progress { display: flex; gap: 6px; margin-bottom: 14px; }
+.progress span {
+  flex: 1; height: 4px; border-radius: 2px; background: var(--border);
+}
+.progress span.on { background: var(--accent); }
+
+.btn-primary, .btn-secondary, .btn-event {
+  width: 100%; padding: 16px; border-radius: 12px; font-family: inherit;
+  font-size: 17px; font-weight: 700; letter-spacing: 0.5px; cursor: pointer; border: none;
+}
+.btn-primary { background: var(--accent); color: #fff; margin-top: 8px; }
+.btn-secondary {
+  background: var(--surface); color: var(--text); border: 2px solid var(--border); margin-top: 8px;
+}
+.btn-event {
+  text-align: left; padding: 14px 12px; background: var(--surface);
+  border: 2px solid var(--border); color: var(--text); margin-bottom: 10px;
+}
+.btn-event small { display: block; font-size: 12px; font-weight: 400; color: var(--muted); margin-top: 4px; }
+.btn-event:disabled { opacity: 0.35; cursor: not-allowed; }
+.btn-event.highlight {
+  background: var(--highlight); border-color: var(--accent-light);
+}
+.btn-event.highlight small { color: #b8e0b0; }
+
+.journey-head {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 12px; margin-bottom: 14px;
+}
+.journey-head strong { display: block; font-size: 18px; }
+.journey-head span { font-size: 13px; color: var(--muted); }
+
+.timeline {
+  font-size: 13px; color: var(--muted); max-height: 120px; overflow-y: auto;
+  margin-bottom: 12px; padding-left: 8px; border-left: 2px solid var(--border);
+}
+.timeline div { margin-bottom: 6px; }
+
+.toast {
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+  background: #152515; border: 1px solid var(--accent); padding: 10px 16px;
+  border-radius: 10px; z-index: 50; max-width: 90%;
+}
 
