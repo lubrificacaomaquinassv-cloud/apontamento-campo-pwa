@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#0a1409" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>Apontamento de Campo — Santa Vergínia</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icons/logo-placa-sv.png" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="css/app.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div class="logo"><img src="icons/logo-placa-sv.png" alt="Santa Vergínia" /></div>
+      <div>
+        <h1>Apontamento de Campo</h1>
+        <p>Santa Vergínia — Florestal</p>
+      </div>
+    </header>
+
+    <div class="status-bar" id="statusBar">
+      <span id="syncLabel">Sync: —</span>
+      <span id="netLabel">Rede: —</span>
+    </div>
+
+    <div class="offline-banner hidden" id="offlineBanner">
+      Sem internet. Os dados ficam no aparelho até sincronizar.
+    </div>
+
+    <!-- HOME -->
+    <section id="screenHome">
+      <div class="sec">Início</div>
+      <p class="field-hint">Abra um novo turno ou continue a jornada em andamento.</p>
+      <button type="button" class="btn-primary" id="btnNovoTurno">Novo turno</button>
+      <button type="button" class="btn-secondary hidden" id="btnContinuar">Continuar jornada</button>
+    </section>
+
+    <!-- WIZARD -->
+    <section id="screenWizard" class="hidden">
+      <div class="progress" id="wizardProgress">
+        <span></span><span></span><span></span><span></span>
+      </div>
+
+      <div id="step1">
+        <div class="sec">Etapa 1 — Jornada</div>
+        <div class="field"><label for="dataOp">Data</label><input type="date" id="dataOp" required /></div>
+        <div class="field"><label for="frota">Frota</label><input type="text" id="frota" list="frotaList" required /></div>
+        <datalist id="frotaList"></datalist>
+        <div class="field"><label for="operador">Operador</label><input type="text" id="operador" list="operadorList" required /></div>
+        <datalist id="operadorList"></datalist>
+        <div class="field"><label for="operacao">Operação</label><select id="operacao" required></select></div>
+        <div class="field"><label for="horaTurno">Início turno (hora)</label><input type="time" id="horaTurno" required /></div>
+        <div class="field"><label for="hrTurno">Horímetro início turno</label><input type="number" id="hrTurno" step="0.1" min="0" required /></div>
+        <div class="field hidden" id="wrapDeslocEscolha">
+          <label>Este turno terá deslocamento até o campo?</label>
+          <select id="modoDesloc"><option value="SEM">Não</option><option value="COM">Sim</option></select>
+        </div>
+        <button type="button" class="btn-primary" id="btnStep1Next">Continuar</button>
+      </div>
+
+      <div id="step2" class="hidden">
+        <div class="sec">Etapa 2 — Deslocamento (saída)</div>
+        <div class="field"><label for="origemLoc">Origem</label><select id="origemLoc"></select></div>
+        <div class="field"><label for="destinoLoc">Destino</label><select id="destinoLoc"></select></div>
+        <div class="field"><label for="horaSaida">Horário saída</label><input type="time" id="horaSaida" /></div>
+        <div class="field"><label for="hrSaida">Horímetro saída</label><input type="number" id="hrSaida" step="0.1" min="0" /></div>
+        <button type="button" class="btn-primary" id="btnStep2Next">Chegada / continuar</button>
+      </div>
+
+      <div id="step3" class="hidden">
+        <div class="sec">Etapa 3 — Chegada</div>
+        <div class="field"><label for="horaChegada">Horário chegada</label><input type="time" id="horaChegada" /></div>
+        <div class="field"><label for="hrChegada">Horímetro chegada</label><input type="number" id="hrChegada" step="0.1" min="0" /></div>
+        <button type="button" class="btn-primary" id="btnStep3Next">Início operação</button>
+      </div>
+
+      <div id="step4" class="hidden">
+        <div class="sec">Etapa 4 — Início operação</div>
+        <div class="field"><label for="retiro">Retiro / local</label><select id="retiro"></select></div>
+        <div class="field"><label for="talhaoCod">Talhão (opcional)</label><input type="text" id="talhaoCod" placeholder="Ex: 435" /></div>
+        <div class="field"><label for="horaOp">Horário início operação</label><input type="time" id="horaOp" required /></div>
+        <div class="field"><label for="hrOp">Horímetro início operação</label><input type="number" id="hrOp" step="0.1" min="0" required /></div>
+        <button type="button" class="btn-primary" id="btnIniciarJornada">Abrir jornada</button>
+      </div>
+    </section>
+
+    <!-- JORNADA -->
+    <section id="screenJourney" class="hidden">
+      <div class="journey-head" id="journeyHead"></div>
+      <div class="sec">Operação em andamento</div>
+      <p class="field-hint">Talhão · Horímetro · Insumos conforme operação</p>
+      <div class="timeline" id="timeline"></div>
+      <div id="eventButtons"></div>
+      <button type="button" class="btn-secondary" id="btnSync">Sincronizar / atualizar</button>
+    </section>
+  </div>
+
+  <div class="toast hidden" id="toast"></div>
+
+  <script src="config.js"></script>
+  <script src="js/storage.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./sw.js").catch(console.warn);
+    }
+  </script>
+</body>
+</html>
