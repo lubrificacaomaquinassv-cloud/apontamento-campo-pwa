@@ -52,11 +52,29 @@ function $(id) {
   return document.getElementById(id);
 }
 
-function toast(msg) {
+const APP_VERSION = "v11";
+
+function toast(msg, ms = 4500) {
   const el = $("toast");
   el.textContent = msg;
   el.classList.remove("hidden");
-  setTimeout(() => el.classList.add("hidden"), 3500);
+  setTimeout(() => el.classList.add("hidden"), ms);
+}
+
+function advanceWizardFromStep1() {
+  if (!turn) return;
+  showScreen("screenWizard");
+  const modo = turn.modo_deslocamento || $("modoDesloc").value;
+  if (modo === "COM") {
+    setWizardStep(2);
+    $("horaSaida").value = nowTime();
+    $("hrSaida").value = $("hrTurno").value;
+    toast("Etapa 2 — deslocamento (saída)");
+  } else {
+    setWizardStep(4);
+    $("hrOp").value = $("hrTurno").value;
+    toast("Etapa 4 — início no talhão");
+  }
 }
 
 function nowTime() {
@@ -594,9 +612,8 @@ async function startWizardFlow() {
   }
   let resumed = false;
   try {
-    const existing = await findOpenTurn(payload.data, payload.id_frota, payload.operador);
+    let existing = await findOpenTurn(payload.data, payload.id_frota, payload.operador);
     if (existing) {
-      if (!confirm("Já existe turno aberto hoje. Continuar nele?")) return false;
       turn = {
         ...existing,
         modo_deslocamento: modo,
@@ -607,23 +624,37 @@ async function startWizardFlow() {
       };
       turn.seq = await loadTurnMaxSeq();
       resumed = true;
+      toast("Continuando turno aberto de hoje");
       if (existing.estado_jornada === "OPERACAO_ATIVA") {
         await Storage.saveActiveTurn(turn);
-        toast("Turno em andamento — abrindo jornada");
         showJourney();
         return true;
       }
     } else {
-      const ins = await sbPost("campo_turno", payload);
-      if (!ins?.[0]?.id) throw new Error("Turno não gravado");
-      turn = {
-        ...ins[0],
-        seq: 0,
-        exige_insumo: op.exige_insumo,
-        desloc_retorno_concluido: modo !== "COM",
-        ciclo_ativo: false,
-        fase_pos_fim: false,
-      };
+      try {
+        const ins = await sbPost("campo_turno", payload);
+        if (!ins?.[0]?.id) throw new Error("Turno não gravado");
+        turn = {
+          ...ins[0],
+          seq: 0,
+          exige_insumo: op.exige_insumo,
+          desloc_retorno_concluido: modo !== "COM",
+          ciclo_ativo: false,
+          fase_pos_fim: false,
+        };
+      } catch (postErr) {
+        const msg = String(postErr.message || postErr);
+        if (msg.includes("23505") || msg.toLowerCase().includes("duplicate")) {
+          existing = await findOpenTurn(payload.data, payload.id_frota, payload.operador);
+          if (!existing) throw postErr;
+          turn = { ...existing, modo_deslocamento: modo, exige_insumo: op.exige_insumo };
+          turn.seq = await loadTurnMaxSeq();
+          resumed = true;
+          toast("Turno já existia — continuando");
+        } else {
+          throw postErr;
+        }
+      }
     }
     if (turn.modo_deslocamento !== "COM") turn.desloc_retorno_concluido = true;
 
@@ -729,7 +760,7 @@ async function boot() {
 
   try {
     await initCatalogs();
-    $("syncLabel").textContent = "Catálogo: OK";
+    $("syncLabel").textContent = `Catálogo: OK · ${APP_VERSION}`;
     $("syncLabel").className = "ok";
   } catch (e) {
     $("syncLabel").textContent = "Catálogo: erro";
@@ -809,34 +840,27 @@ async function boot() {
   });
 
   $("btnStep1Next").addEventListener("click", async () => {
+    toast("Salvando turno…");
     const op = selectedOperacao();
     if (!op) {
       toast("Selecione a operação");
       return;
     }
-    $("btnStep1Next").disabled = true;
+    const btn = $("btnStep1Next");
+    btn.disabled = true;
     try {
       const ok = await startWizardFlow();
       if (!ok || !turn) {
-        toast("Não foi possível avançar. Veja a mensagem acima.");
+        toast("Não avançou. Verifique frota, operador e rede.", 6000);
         return;
       }
       if (turn.estado_jornada === "OPERACAO_ATIVA") return;
-      showScreen("screenWizard");
-      const modo = turn.modo_deslocamento || $("modoDesloc").value;
-      if (modo === "COM") {
-        setWizardStep(2);
-        $("horaSaida").value = nowTime();
-        $("hrSaida").value = $("hrTurno").value;
-      } else {
-        setWizardStep(4);
-        $("hrOp").value = $("hrTurno").value;
-      }
+      advanceWizardFromStep1();
     } catch (e) {
       console.error(e);
-      toast(e.message || "Erro inesperado");
+      toast(String(e.message || e).slice(0, 120), 7000);
     } finally {
-      $("btnStep1Next").disabled = false;
+      btn.disabled = false;
     }
   });
 
