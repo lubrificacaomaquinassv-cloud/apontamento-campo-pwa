@@ -86,5 +86,10 @@ async function findOpenTurn(data, frota, operador) {
     `data=eq.${data}&id_frota=eq.${encodeURIComponent(frota)}` +
     `&operador=eq.${encodeURIComponent(operador)}&status=eq.ABERTO&select=*&limit=1`;
   const rows = await sbGet("campo_turno", q);
-  return rows[0] || null;
+  if (rows[0]) return rows[0];
+  const q2 =
+    `data=eq.${data}&id_frota=eq.${encodeURIComponent(frota)}` +
+    `&status=eq.ABERTO&select=*&limit=1`;
+  const rows2 = await sbGet("campo_turno", q2);
+  return rows2[0] || null;
 }
