@@ -35,7 +35,8 @@
       <div class="sec">Início</div>
       <p class="field-hint">Abra um novo turno ou continue a jornada em andamento.</p>
       <button type="button" class="btn-primary" id="btnNovoTurno">Novo turno</button>
-      <button type="button" class="btn-secondary hidden" id="btnContinuar">Continuar jornada</button>
+      <button type="button" class="btn-secondary hidden" id="btnContinuar">Continuar operação</button>
+      <p class="field-hint hidden" id="hintContinuar">Turno aberto — retome a jornada ou inicie outro talhão na tela seguinte.</p>
     </section>
 
     <!-- WIZARD -->
@@ -94,6 +95,11 @@
       <p class="field-hint">Talhão · Horímetro · Insumos conforme operação</p>
       <div class="timeline" id="timeline"></div>
       <div id="eventButtons"></div>
+      <div id="posCicloActions" class="hidden">
+        <p class="field-hint">Ciclo do talhão encerrado. Mesmo turno — pode abrir o próximo talhão.</p>
+        <button type="button" class="btn-primary" id="btnProximoTalhao">Próximo talhão</button>
+      </div>
+      <button type="button" class="btn-secondary" id="btnVoltarInicio">Voltar ao início</button>
       <button type="button" class="btn-secondary" id="btnSync">Sincronizar / atualizar</button>
     </section>
   </div>
