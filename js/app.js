@@ -154,10 +154,105 @@ async function refreshTimeline() {
 }
 
 function renderJourneyHead() {
+  const ciclo =
+    turn.ciclo_ativo === false
+      ? "entre talhões (ciclo fechado)"
+      : `Talhão ${turn.talhao_codigo || "—"}`;
   $("journeyHead").innerHTML = `
     <strong>${turn.id_frota} · ${turn.operador}</strong>
     <span>${turn.operacao_nome || ""} · HR ${turn.last_hr ?? turn.horimetro_inicio_turno ?? "—"}</span>
-    <span>Talhão ${turn.talhao_codigo || "—"} · Sync ${turn.sync_status || "PENDENTE"}</span>`;
+    <span>${ciclo} · Sync ${turn.sync_status || "PENDENTE"}</span>`;
+}
+
+function refreshHomeButtons() {
+  const aberto =
+    turn &&
+    turn.status !== "ENCERRADO" &&
+    turn.status !== "CANCELADO" &&
+    (turn.id || turn.pending);
+  $("btnContinuar").classList.toggle("hidden", !aberto);
+  $("hintContinuar").classList.toggle("hidden", !aberto);
+  if (aberto && turn.ciclo_ativo === false) {
+    $("btnContinuar").textContent = "Continuar operação (próximo talhão)";
+  } else {
+    $("btnContinuar").textContent = "Continuar operação";
+  }
+}
+
+function refreshPosCicloUI() {
+  const show = turn && turn.ciclo_ativo === false && turn.status === "ABERTO";
+  $("posCicloActions").classList.toggle("hidden", !show);
+}
+
+async function getNextCicloSeq() {
+  if (!turn?.id) return (turn?.ciclo_seq_count || 0) + 1;
+  const rows = await sbGet(
+    "campo_ciclo_operacao",
+    `id_turno=eq.${turn.id}&select=seq&order=seq.desc&limit=1`
+  );
+  return rows[0] ? rows[0].seq + 1 : 1;
+}
+
+async function startNextTalhao() {
+  if (!turn?.id) {
+    toast("Turno não gravado no servidor — conecte-se e abra o turno de novo.");
+    return;
+  }
+  if (!navigator.onLine) {
+    toast("Próximo talhão exige internet nesta versão.");
+    return;
+  }
+  const talhao = prompt("Código do novo talhão:");
+  if (talhao === null || !String(talhao).trim()) return;
+  const hora = prompt("Horário início no novo talhão (HH:MM):", nowTime());
+  if (!hora) return;
+  const hrDefault = turn.last_hr ?? turn.horimetro_inicio_turno ?? "";
+  const hr = parseFloat(prompt("Horímetro início operação:", String(hrDefault)));
+  if (!Number.isFinite(hr)) return;
+
+  const retiroStr = prompt(
+    "Retiro/local (número id ou Enter para manter o anterior):",
+    turn.retiro_id ? String(turn.retiro_id) : ""
+  );
+  let retiroId = turn.retiro_id || null;
+  if (retiroStr && String(retiroStr).trim()) {
+    const parsed = parseInt(retiroStr, 10);
+    if (Number.isFinite(parsed)) retiroId = parsed;
+  }
+
+  await registerEvent("PARADA_MUDANCA_TALHAO", {
+    hora: nowTime(),
+    talhao_codigo: String(talhao).trim(),
+    retiro_id: retiroId,
+  });
+
+  const seq = await getNextCicloSeq();
+  const ciclo = await sbPost("campo_ciclo_operacao", {
+    id_turno: turn.id,
+    seq,
+    talhao_codigo: String(talhao).trim(),
+    retiro_id: retiroId,
+    status: "ATIVO",
+    hora_inicio: hora,
+    horimetro_ini: hr,
+  });
+  turn.id_ciclo = ciclo[0].id;
+  turn.talhao_codigo = String(talhao).trim();
+  turn.retiro_id = retiroId;
+  turn.last_hr = hr;
+  turn.ciclo_ativo = true;
+  await registerEvent("INICIO_OPERACAO", {
+    hora,
+    horimetro: hr,
+    retiro_id: retiroId,
+    talhao_codigo: turn.talhao_codigo,
+  });
+  await sbPatch("campo_turno", `id=eq.${turn.id}`, { estado_jornada: "OPERACAO_ATIVA" });
+  await Storage.saveActiveTurn(turn);
+  renderJourneyHead();
+  refreshPosCicloUI();
+  refreshHomeButtons();
+  toast(`Talhão ${turn.talhao_codigo} iniciado`);
 }
 
 function renderEventButtons() {
@@ -197,6 +292,10 @@ async function onEventClick(codigo) {
     return;
   }
   if (codigo === "FIM_OPERACAO") {
+    if (turn.ciclo_ativo === false) {
+      toast("Use «Próximo talhão» ou encerre o turno.");
+      return;
+    }
     const hr = parseFloat(prompt("Horímetro fim operação:"));
     if (!Number.isFinite(hr)) return;
     await registerEvent("FIM_OPERACAO", { hora: nowTime(), horimetro: hr });
@@ -208,6 +307,12 @@ async function onEventClick(codigo) {
         fechado_em: new Date().toISOString(),
       });
     }
+    turn.ciclo_ativo = false;
+    turn.last_hr = hr;
+    await Storage.saveActiveTurn(turn);
+    refreshPosCicloUI();
+    refreshHomeButtons();
+    toast("Talhão encerrado — toque «Próximo talhão» para continuar");
     return;
   }
   if (codigo === "FINAL_TURNO") {
@@ -226,6 +331,7 @@ async function onEventClick(codigo) {
     turn = null;
     toast("Turno encerrado");
     showScreen("screenHome");
+    refreshHomeButtons();
     return;
   }
   await registerEvent(codigo, {});
@@ -323,6 +429,7 @@ async function finishDeslocAndCiclo() {
       horimetro_ini: turn.last_hr,
     });
     turn.id_ciclo = ciclo[0].id;
+    turn.ciclo_ativo = true;
     await registerEvent("INICIO_OPERACAO", {
       hora: $("horaOp").value,
       horimetro: turn.last_hr,
@@ -339,8 +446,9 @@ function showJourney() {
   renderJourneyHead();
   renderEventButtons();
   refreshTimeline();
+  refreshPosCicloUI();
+  refreshHomeButtons();
   showScreen("screenJourney");
-  $("btnContinuar").classList.remove("hidden");
 }
 
 function onOperacaoChange() {
@@ -371,8 +479,10 @@ async function boot() {
   const saved = await Storage.getActiveTurn();
   if (saved?.id || saved?.pending) {
     turn = saved;
-    $("btnContinuar").classList.remove("hidden");
+    if (turn.ciclo_ativo === undefined && turn.id_ciclo) turn.ciclo_ativo = true;
+    if (turn.ciclo_ativo === undefined && !turn.id_ciclo) turn.ciclo_ativo = false;
   }
+  refreshHomeButtons();
 
   $("operacao").addEventListener("change", onOperacaoChange);
   onOperacaoChange();
@@ -383,7 +493,18 @@ async function boot() {
   });
 
   $("btnContinuar").addEventListener("click", () => {
-    if (turn) showJourney();
+    if (!turn || turn.status === "ENCERRADO") {
+      toast("Nenhum turno aberto. Use «Novo turno».");
+      refreshHomeButtons();
+      return;
+    }
+    showJourney();
+  });
+
+  $("btnProximoTalhao").addEventListener("click", () => startNextTalhao());
+  $("btnVoltarInicio").addEventListener("click", () => {
+    refreshHomeButtons();
+    showScreen("screenHome");
   });
 
   $("btnStep1Next").addEventListener("click", async () => {
