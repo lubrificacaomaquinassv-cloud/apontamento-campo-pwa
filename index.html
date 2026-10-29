@@ -96,12 +96,48 @@
       <div class="timeline" id="timeline"></div>
       <div id="eventButtons"></div>
       <div id="posCicloActions" class="hidden">
-        <p class="field-hint">Ciclo do talhão encerrado. Mesmo turno — pode abrir o próximo talhão.</p>
-        <button type="button" class="btn-primary" id="btnProximoTalhao">Próximo talhão</button>
+        <p class="field-hint" id="posCicloHint">—</p>
+        <button type="button" class="btn-primary highlight" id="btnInsumosPosFim">2 · Lançar insumos</button>
+        <button type="button" class="btn-secondary" id="btnSemInsumoTalhao">Concluir talhão — próximo</button>
+        <button type="button" class="btn-primary hidden" id="btnProximoTalhao">3 · Próximo talhão</button>
       </div>
       <button type="button" class="btn-secondary" id="btnVoltarInicio">Voltar ao início</button>
       <button type="button" class="btn-secondary" id="btnSync">Sincronizar / atualizar</button>
     </section>
+  </div>
+
+  <div class="modal-overlay hidden" id="modalOverlay">
+    <div class="modal-panel">
+      <div id="modalProximoTalhao" class="hidden">
+        <div class="sec">Próximo talhão</div>
+        <div class="field"><label for="nextRetiro">Retiro / local</label><select id="nextRetiro"></select></div>
+        <div class="field"><label for="nextTalhaoCod">Talhão</label><input type="text" id="nextTalhaoCod" placeholder="Ex: 435" required /></div>
+        <div class="field"><label for="nextHoraOp">Horário início</label><input type="time" id="nextHoraOp" required /></div>
+        <div class="field"><label for="nextHrOp">Horímetro início</label><input type="number" id="nextHrOp" step="0.1" min="0" required /></div>
+        <button type="button" class="btn-primary" id="btnConfirmProximoTalhao">Confirmar talhão</button>
+        <button type="button" class="btn-secondary" id="btnCancelProximoTalhao">Cancelar</button>
+      </div>
+      <div id="modalDeslocRetorno" class="hidden">
+        <div class="sec">Retorno à sede</div>
+        <p class="field-hint">Registre saída da frente e chegada na sede. Depois use «Fim turno».</p>
+        <div class="field"><label for="retOrigemLoc">Origem (frente)</label><select id="retOrigemLoc"></select></div>
+        <div class="field"><label for="retDestinoLoc">Destino (sede)</label><select id="retDestinoLoc"></select></div>
+        <div class="field"><label for="retHoraSaida">Horário saída</label><input type="time" id="retHoraSaida" required /></div>
+        <div class="field"><label for="retHrSaida">Horímetro saída</label><input type="number" id="retHrSaida" step="0.1" min="0" required /></div>
+        <div class="field"><label for="retHoraChegada">Horário chegada sede</label><input type="time" id="retHoraChegada" required /></div>
+        <div class="field"><label for="retHrChegada">Horímetro chegada</label><input type="number" id="retHrChegada" step="0.1" min="0" required /></div>
+        <button type="button" class="btn-primary" id="btnConfirmDeslocRetorno">Confirmar retorno</button>
+        <button type="button" class="btn-secondary" id="btnCancelDeslocRetorno">Cancelar</button>
+      </div>
+      <div id="modalInsumos" class="hidden">
+        <div class="sec">Lançamento de insumos</div>
+        <div class="field"><label for="insumoSelect">Insumo</label><select id="insumoSelect"></select></div>
+        <div class="field"><label for="insumoQtd">Quantidade</label><input type="number" id="insumoQtd" step="0.01" min="0" required /></div>
+        <p class="field-hint" id="insumoUnidadeHint">Unidade conforme cadastro</p>
+        <button type="button" class="btn-primary" id="btnConfirmInsumo">Registrar insumo</button>
+        <button type="button" class="btn-secondary" id="btnCancelInsumo">Cancelar</button>
+      </div>
+    </div>
   </div>
 
   <div class="toast hidden" id="toast"></div>
