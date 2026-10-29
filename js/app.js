@@ -538,11 +538,29 @@ async function confirmDeslocRetorno() {
   toast("Chegada na sede registrada — agora use «Fim turno»");
 }
 
+async function loadTurnMaxSeq() {
+  if (!turn?.id || !navigator.onLine) return turn?.seq || 0;
+  const rows = await sbGet(
+    "fato_evento_campo",
+    `id_turno=eq.${turn.id}&select=seq&order=seq.desc&limit=1`
+  );
+  return rows[0]?.seq || 0;
+}
+
 async function startWizardFlow() {
   const op = selectedOperacao();
   if (!op) {
     toast("Selecione a operação");
-    return;
+    return false;
+  }
+  const hrTurno = parseFloat($("hrTurno").value);
+  if (!$("frota").value.trim() || !$("operador").value.trim()) {
+    toast("Preencha frota e operador");
+    return false;
+  }
+  if (!Number.isFinite(hrTurno)) {
+    toast("Horímetro início inválido");
+    return false;
   }
   const modo =
     op.deslocamento_modo === "NUNCA" ? "NAO_APLICA" : op.deslocamento_modo === "SEMPRE" ? "COM" : $("modoDesloc").value;
@@ -558,40 +576,76 @@ async function startWizardFlow() {
     status: "ABERTO",
     estado_jornada: "TURNO_ABERTO",
     hora_inicio_turno: $("horaTurno").value,
-    horimetro_inicio_turno: parseFloat($("hrTurno").value),
+    horimetro_inicio_turno: hrTurno,
     sync_status: "PENDENTE",
   };
   if (!navigator.onLine) {
-    turn = { ...payload, seq: 0, pending: true, desloc_retorno_concluido: false };
+    turn = {
+      ...payload,
+      seq: 0,
+      pending: true,
+      desloc_retorno_concluido: modo !== "COM",
+      ciclo_ativo: false,
+      fase_pos_fim: false,
+    };
     await Storage.saveActiveTurn(turn);
-    toast("Turno salvo offline — sync quando houver rede");
-    showJourney();
-    return;
+    toast("Offline — continue o wizard; sync depois");
+    return true;
   }
-  const existing = await findOpenTurn(payload.data, payload.id_frota, payload.operador);
-  if (existing) {
-    if (!confirm("Já existe turno aberto hoje. Continuar nele?")) return;
-    turn = { ...existing, seq: 0, desloc_retorno_concluido: existing.desloc_retorno_concluido ?? false };
-  } else {
-    const ins = await sbPost("campo_turno", payload);
-    turn = { ...ins[0], seq: 0, desloc_retorno_concluido: false };
-  }
-  if (turn.modo_deslocamento !== "COM") turn.desloc_retorno_concluido = true;
-  turn.seq = 0;
-  await nextSeq();
-  await pushEvent({
-    client_event_id: crypto.randomUUID(),
-    id_turno: turn.id,
-    seq: turn.seq,
-    codigo_evento: "INICIO_TURNO",
-    hora: $("horaTurno").value,
-    horimetro: parseFloat($("hrTurno").value),
-    origem: "PWA",
-  });
+  let resumed = false;
+  try {
+    const existing = await findOpenTurn(payload.data, payload.id_frota, payload.operador);
+    if (existing) {
+      if (!confirm("Já existe turno aberto hoje. Continuar nele?")) return false;
+      turn = {
+        ...existing,
+        modo_deslocamento: modo,
+        exige_insumo: op.exige_insumo,
+        operacao_nome: op.nome,
+        id_operacao_campo: op.id,
+        desloc_retorno_concluido: existing.desloc_retorno_concluido ?? modo !== "COM",
+      };
+      turn.seq = await loadTurnMaxSeq();
+      resumed = true;
+      if (existing.estado_jornada === "OPERACAO_ATIVA") {
+        await Storage.saveActiveTurn(turn);
+        toast("Turno em andamento — abrindo jornada");
+        showJourney();
+        return true;
+      }
+    } else {
+      const ins = await sbPost("campo_turno", payload);
+      if (!ins?.[0]?.id) throw new Error("Turno não gravado");
+      turn = {
+        ...ins[0],
+        seq: 0,
+        exige_insumo: op.exige_insumo,
+        desloc_retorno_concluido: modo !== "COM",
+        ciclo_ativo: false,
+        fase_pos_fim: false,
+      };
+    }
+    if (turn.modo_deslocamento !== "COM") turn.desloc_retorno_concluido = true;
 
-  if (modo === "COM") {
-    toast("Preencha deslocamento nos passos 2–3");
-    return;
+    if (!resumed) {
+      await nextSeq();
+      await pushEvent({
+        client_event_id: crypto.randomUUID(),
+        id_turno: turn.id,
+        seq: turn.seq,
+        codigo_evento: "INICIO_TURNO",
+        hora: $("horaTurno").value,
+        horimetro: hrTurno,
+        origem: "PWA",
+      });
+    }
+    await Storage.saveActiveTurn(turn);
+    return true;
+  } catch (e) {
+    console.error(e);
+    toast(e.message || "Erro ao abrir turno — tente de novo");
+    turn = null;
+    return false;
   }
 }
 
@@ -756,16 +810,33 @@ async function boot() {
 
   $("btnStep1Next").addEventListener("click", async () => {
     const op = selectedOperacao();
-    if (!op) return;
-    await startWizardFlow();
-    const modo = turn.modo_deslocamento;
-    if (modo === "COM") {
-      setWizardStep(2);
-      $("horaSaida").value = nowTime();
-      $("hrSaida").value = $("hrTurno").value;
-    } else {
-      setWizardStep(4);
-      $("hrOp").value = $("hrTurno").value;
+    if (!op) {
+      toast("Selecione a operação");
+      return;
+    }
+    $("btnStep1Next").disabled = true;
+    try {
+      const ok = await startWizardFlow();
+      if (!ok || !turn) {
+        toast("Não foi possível avançar. Veja a mensagem acima.");
+        return;
+      }
+      if (turn.estado_jornada === "OPERACAO_ATIVA") return;
+      showScreen("screenWizard");
+      const modo = turn.modo_deslocamento || $("modoDesloc").value;
+      if (modo === "COM") {
+        setWizardStep(2);
+        $("horaSaida").value = nowTime();
+        $("hrSaida").value = $("hrTurno").value;
+      } else {
+        setWizardStep(4);
+        $("hrOp").value = $("hrTurno").value;
+      }
+    } catch (e) {
+      console.error(e);
+      toast(e.message || "Erro inesperado");
+    } finally {
+      $("btnStep1Next").disabled = false;
     }
   });
 
