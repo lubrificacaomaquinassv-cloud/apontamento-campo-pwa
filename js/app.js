@@ -52,7 +52,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v11";
+const APP_VERSION = "v12";
 
 function toast(msg, ms = 4500) {
   const el = $("toast");
@@ -297,10 +297,15 @@ function refreshPosCicloUI() {
   if (!aberto) return;
   const tal = turn.talhao_codigo || "—";
   if (turn.fase_pos_fim) {
-    $("posCicloHint").textContent =
-      `Talhão ${tal} finalizado — lance insumos (se houver) e libere o próximo.`;
-    $("btnInsumosPosFim").classList.remove("hidden");
+    const exIn = operacaoExigeInsumo();
+    $("posCicloHint").textContent = exIn
+      ? `Talhão ${tal} finalizado — lance insumos ou «Sem insumo».`
+      : `Trecho ${tal} finalizado — confirme para liberar o próximo.`;
+    $("btnInsumosPosFim").classList.toggle("hidden", !exIn);
     $("btnSemInsumoTalhao").classList.remove("hidden");
+    $("btnSemInsumoTalhao").textContent = exIn
+      ? "Concluir talhão — próximo"
+      : "Próximo retiro / talhão";
     $("btnProximoTalhao").classList.add("hidden");
   } else if (turn.insumos_talhao_concluido) {
     $("posCicloHint").textContent = `Talhão ${tal} concluído — abra o próximo talhão.`;
@@ -400,6 +405,7 @@ function renderEventButtons() {
   const precisaDesloc =
     turnoExigeDeslocRetorno() && turn.ciclo_ativo === false && !turn.desloc_retorno_concluido;
   for (const b of JOURNEY_BUTTONS) {
+    if (b.codigo === "LANCAMENTO_INSUMOS" && !operacaoExigeInsumo()) continue;
     const btn = document.createElement("button");
     btn.type = "button";
     let cls = "btn-event" + (b.highlight ? " highlight" : "");
@@ -456,16 +462,26 @@ async function onEventClick(codigo) {
       });
     }
     turn.ciclo_ativo = false;
-    turn.fase_pos_fim = true;
-    turn.insumos_talhao_concluido = false;
     turn.insumo_lancado_talhao = false;
     turn.id_ciclo_fechado = turn.id_ciclo;
     turn.last_hr = hr;
-    await Storage.saveActiveTurn(turn);
-    refreshPosCicloUI();
-    refreshHomeButtons();
-    renderEventButtons();
-    toast(`Talhão ${turn.talhao_codigo || "—"}: lance insumos (passo 2)`);
+    if (operacaoExigeInsumo()) {
+      turn.fase_pos_fim = true;
+      turn.insumos_talhao_concluido = false;
+      await Storage.saveActiveTurn(turn);
+      refreshPosCicloUI();
+      refreshHomeButtons();
+      renderEventButtons();
+      toast(`Talhão ${turn.talhao_codigo || "—"}: lance insumos (passo 2)`);
+    } else {
+      turn.fase_pos_fim = false;
+      turn.insumos_talhao_concluido = true;
+      await Storage.saveActiveTurn(turn);
+      refreshPosCicloUI();
+      refreshHomeButtons();
+      renderEventButtons();
+      toast("Sem insumo nesta operação — use «Próximo talhão» ou Fim turno");
+    }
     return;
   }
   if (codigo === "DESLOC_FRENTE_SEDE") {
@@ -589,7 +605,6 @@ async function startWizardFlow() {
     operador: $("operador").value.trim().toUpperCase(),
     id_operacao_campo: op.id,
     operacao_nome: op.nome,
-    exige_insumo: op.exige_insumo,
     modo_deslocamento: modo,
     status: "ABERTO",
     estado_jornada: "TURNO_ABERTO",
@@ -646,7 +661,18 @@ async function startWizardFlow() {
         const msg = String(postErr.message || postErr);
         if (msg.includes("23505") || msg.toLowerCase().includes("duplicate")) {
           existing = await findOpenTurn(payload.data, payload.id_frota, payload.operador);
-          if (!existing) throw postErr;
+          if (!existing) {
+            const q =
+              `data=eq.${payload.data}&id_frota=eq.${encodeURIComponent(payload.id_frota)}` +
+              `&operador=eq.${encodeURIComponent(payload.operador)}&select=id,status&limit=1`;
+            const closed = await sbGet("campo_turno", q);
+            if (closed[0]?.status === "ENCERRADO") {
+              throw new Error(
+                "Turno de hoje já encerrado (mesma frota/operador). Confira a data ou fale com o gestor."
+              );
+            }
+            throw postErr;
+          }
           turn = { ...existing, modo_deslocamento: modo, exige_insumo: op.exige_insumo };
           turn.seq = await loadTurnMaxSeq();
           resumed = true;
@@ -674,7 +700,13 @@ async function startWizardFlow() {
     return true;
   } catch (e) {
     console.error(e);
-    toast(e.message || "Erro ao abrir turno — tente de novo");
+    let msg = e.message || "Erro ao abrir turno — tente de novo";
+    if (msg.includes("PGRST204") || msg.includes("Could not find")) {
+      msg = "Erro de versão do app — publique a v12 ou atualize a página.";
+    } else if (msg.length > 140) {
+      msg = msg.slice(0, 140);
+    }
+    toast(msg, 7000);
     turn = null;
     return false;
   }
@@ -850,10 +882,7 @@ async function boot() {
     btn.disabled = true;
     try {
       const ok = await startWizardFlow();
-      if (!ok || !turn) {
-        toast("Não avançou. Verifique frota, operador e rede.", 6000);
-        return;
-      }
+      if (!ok || !turn) return;
       if (turn.estado_jornada === "OPERACAO_ATIVA") return;
       advanceWizardFromStep1();
     } catch (e) {
