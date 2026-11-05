@@ -18,12 +18,32 @@ function turnoExigeDeslocRetorno() {
   return turn?.modo_deslocamento === "COM";
 }
 
+function etapaInsumosPendente() {
+  return !!turn?.fase_pos_fim && operacaoExigeInsumo();
+}
+
 function podeEncerrarTurno() {
   if (!turn || turn.ciclo_ativo !== false) return false;
-  if (turn.fase_pos_fim) return false;
+  if (etapaInsumosPendente()) return false;
+  if (operacaoExigeInsumo() && !turn.insumos_talhao_concluido && !turn.insumo_lancado_talhao) {
+    return false;
+  }
   if (turnoExigeDeslocRetorno() && !turn.desloc_retorno_concluido) return false;
   return true;
 }
+
+/** Após lançar insumo, libera próximo talhão / fim turno. */
+async function concluirEtapaInsumosTalhao() {
+  if (!turn?.fase_pos_fim && !turn?.insumo_lancado_talhao) return;
+  turn.fase_pos_fim = false;
+  turn.insumos_talhao_concluido = true;
+  semInsumoConfirmPending = false;
+  await Storage.saveActiveTurn(turn);
+  refreshPosCicloUI();
+  renderEventButtons();
+}
+
+let semInsumoConfirmPending = false;
 
 function operacaoExigeInsumo() {
   if (turn?.exige_insumo != null) return !!turn.exige_insumo;
@@ -36,23 +56,27 @@ function insumoCicloId() {
 }
 
 async function concluirInsumosTalhao() {
-  if (!turn?.fase_pos_fim) return;
-  if (operacaoExigeInsumo() && !turn.insumo_lancado_talhao) {
-    if (!confirm("Operação exige insumo. Confirmar «sem insumo» neste talhão?")) return;
+  if (!turn?.fase_pos_fim) {
+    toast("Nada pendente neste talhão.");
+    return;
   }
-  turn.fase_pos_fim = false;
-  turn.insumos_talhao_concluido = true;
-  await Storage.saveActiveTurn(turn);
-  refreshPosCicloUI();
-  renderEventButtons();
-  toast("Pode abrir o próximo talhão");
+  if (operacaoExigeInsumo() && !turn.insumo_lancado_talhao) {
+    if (!semInsumoConfirmPending) {
+      semInsumoConfirmPending = true;
+      $("btnSemInsumoTalhao").textContent = "Confirmar sem insumo";
+      toast("Toque de novo em «Confirmar sem insumo» se não houve aplicação.", 6000);
+      return;
+    }
+  }
+  await concluirEtapaInsumosTalhao();
+  toast("Talhão concluído — use «Próximo talhão» ou «Fim turno».");
 }
 
 function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v13";
+const APP_VERSION = "v14";
 
 function toast(msg, ms = 4500) {
   const el = $("toast");
@@ -326,7 +350,8 @@ function refreshPosCicloUI() {
       : "Próximo retiro / talhão";
     $("btnProximoTalhao").classList.add("hidden");
   } else if (turn.insumos_talhao_concluido) {
-    $("posCicloHint").textContent = `Talhão ${tal} concluído — abra o próximo talhão.`;
+    $("posCicloHint").textContent =
+      `Talhão ${tal} concluído — «Próximo talhão» ou «Fim turno» (se acabou o dia).`;
     $("btnInsumosPosFim").classList.add("hidden");
     $("btnSemInsumoTalhao").classList.add("hidden");
     $("btnProximoTalhao").classList.remove("hidden");
@@ -424,6 +449,7 @@ function renderEventButtons() {
     turnoExigeDeslocRetorno() && turn.ciclo_ativo === false && !turn.desloc_retorno_concluido;
   for (const b of JOURNEY_BUTTONS) {
     if (b.codigo === "LANCAMENTO_INSUMOS" && !operacaoExigeInsumo()) continue;
+    if (b.codigo === "DESLOC_FRENTE_SEDE" && !turnoExigeDeslocRetorno()) continue;
     const btn = document.createElement("button");
     btn.type = "button";
     let cls = "btn-event" + (b.highlight ? " highlight" : "");
@@ -441,8 +467,12 @@ function renderEventButtons() {
       btn.disabled = true;
       if (turn.ciclo_ativo !== false) {
         btn.innerHTML = `${b.label}<small>Feche o talhão antes (Fim operação)</small>`;
+      } else if (etapaInsumosPendente()) {
+        btn.innerHTML = `${b.label}<small>Lance insumos ou «Concluir talhão»</small>`;
       } else if (turnoExigeDeslocRetorno() && !turn.desloc_retorno_concluido) {
-        btn.innerHTML = `${b.label}<small>Use «Desloc. retorno sede» antes</small>`;
+        btn.innerHTML = `${b.label}<small>Retorno sede ou toque 2x p/ fim no campo</small>`;
+        btn.disabled = false;
+        btn.className = cls.replace(" highlight", "");
       }
     }
     btn.addEventListener("click", () => onEventClick(b.codigo));
@@ -490,6 +520,7 @@ async function onEventClick(codigo) {
     if (operacaoExigeInsumo()) {
       turn.fase_pos_fim = true;
       turn.insumos_talhao_concluido = false;
+      semInsumoConfirmPending = false;
       await Storage.saveActiveTurn(turn);
       refreshPosCicloUI();
       refreshHomeButtons();
@@ -523,10 +554,23 @@ async function onEventClick(codigo) {
       toast("Use «Fim operação» no talhão antes de encerrar o turno.");
       return;
     }
-    if (turnoExigeDeslocRetorno() && !turn.desloc_retorno_concluido) {
-      toast("Registre «Desloc. retorno sede» antes do fim do turno.");
-      openModalDeslocRetorno();
+    if (etapaInsumosPendente()) {
+      toast("Lance insumos ou toque «Concluir talhão — próximo» antes do fim do turno.");
       return;
+    }
+    if (operacaoExigeInsumo() && !turn.insumos_talhao_concluido && turn.insumo_lancado_talhao) {
+      await concluirEtapaInsumosTalhao();
+    }
+    if (turnoExigeDeslocRetorno() && !turn.desloc_retorno_concluido) {
+      if (!turn._fimTurnoSemRetornoPending) {
+        turn._fimTurnoSemRetornoPending = true;
+        toast("Sem retorno à sede? Toque «Fim turno» de novo para encerrar no campo.", 6500);
+        await Storage.saveActiveTurn(turn);
+        return;
+      }
+      turn.desloc_retorno_concluido = true;
+      turn._fimTurnoSemRetornoPending = false;
+      await Storage.saveActiveTurn(turn);
     }
     const horaFim = promptHora("Horário fim turno (na sede)", nowTime());
     if (!horaFim) return;
@@ -882,9 +926,9 @@ async function boot() {
     }
     await registerEvent("LANCAMENTO_INSUMOS", { hora: nowTime() });
     turn.insumo_lancado_talhao = true;
-    await Storage.saveActiveTurn(turn);
+    await concluirEtapaInsumosTalhao();
     toast(
-      `${ins.descricao} ${qtd} ${ins.unidade || "UN"}. Lance outro ou «Concluir talhão — próximo».`
+      `${ins.descricao} ${qtd} ${ins.unidade || "UN"}. Pode usar «Próximo talhão» ou «Fim turno».`
     );
   });
   $("btnCancelInsumo").addEventListener("click", () => closeModal());
