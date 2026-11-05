@@ -52,7 +52,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v12";
+const APP_VERSION = "v13";
 
 function toast(msg, ms = 4500) {
   const el = $("toast");
@@ -80,6 +80,24 @@ function advanceWizardFromStep1() {
 function nowTime() {
   const d = new Date();
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** Pergunta horário real do fato (lançamento no fim do dia). */
+function promptHora(label, fallback) {
+  const def = fallback || nowTime();
+  const raw = prompt(`${label}\n(HH:MM):`, def);
+  if (raw === null) return null;
+  const h = raw.trim();
+  if (!/^\d{1,2}:\d{2}$/.test(h)) {
+    toast("Horário inválido — use HH:MM (ex.: 16:00)");
+    return null;
+  }
+  const [hh, mm] = h.split(":").map((x) => parseInt(x, 10));
+  if (hh > 23 || mm > 59) {
+    toast("Horário inválido");
+    return null;
+  }
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
 function todayISO() {
@@ -450,13 +468,17 @@ async function onEventClick(codigo) {
       toast("Use «Próximo talhão» ou retorno à sede / fim turno.");
       return;
     }
-    const hr = parseFloat(prompt("Horímetro fim operação:"));
+    const horaFim = promptHora("Horário fim operação", nowTime());
+    if (!horaFim) return;
+    const hr = parseFloat(
+      prompt("Horímetro fim operação:", String(turn.last_hr ?? ""))
+    );
     if (!Number.isFinite(hr)) return;
-    await registerEvent("FIM_OPERACAO", { hora: nowTime(), horimetro: hr });
+    await registerEvent("FIM_OPERACAO", { hora: horaFim, horimetro: hr });
     if (turn.id_ciclo) {
       await sbPatch("campo_ciclo_operacao", `id=eq.${turn.id_ciclo}`, {
         status: "FINALIZADO",
-        hora_fim: nowTime(),
+        hora_fim: horaFim,
         horimetro_fim: hr,
         fechado_em: new Date().toISOString(),
       });
@@ -506,14 +528,16 @@ async function onEventClick(codigo) {
       openModalDeslocRetorno();
       return;
     }
+    const horaFim = promptHora("Horário fim turno (na sede)", nowTime());
+    if (!horaFim) return;
     const hr = parseFloat(
       prompt("Horímetro fim turno (na sede):", String(turn.last_hr ?? ""))
     );
     if (!Number.isFinite(hr)) return;
-    await registerEvent("FINAL_TURNO", { hora: nowTime(), horimetro: hr });
+    await registerEvent("FINAL_TURNO", { hora: horaFim, horimetro: hr });
     await sbPatch("campo_turno", `id=eq.${turn.id}`, {
       status: "ENCERRADO",
-      hora_fim_turno: nowTime(),
+      hora_fim_turno: horaFim,
       horimetro_fim_turno: hr,
       encerrado_em: new Date().toISOString(),
       estado_jornada: "TURNO_ENCERRADO",
