@@ -76,7 +76,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v17";
+const APP_VERSION = "v20";
 
 const PICK_OUTRO = "__OUTRO__";
 
@@ -182,8 +182,81 @@ async function createOfflineTurn(payload, op, modo) {
   return true;
 }
 
+function dedupePendingEvents(events) {
+  const list = [...(events || [])];
+  for (const cod of ["FINAL_TURNO"]) {
+    const matches = list.filter((e) => e.codigo_evento === cod);
+    if (matches.length > 1) {
+      const keep = matches[matches.length - 1];
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i].codigo_evento === cod) list.splice(i, 1);
+      }
+      list.push(keep);
+    }
+  }
+  return list;
+}
+
+async function fecharTurnoNaUI(msg = "Turno encerrado") {
+  if (turn) {
+    const snap = { ...turn, pendingEvents: [...(turn.pendingEvents || [])] };
+    if (await canSyncNow()) {
+      try {
+        await syncPendingTurn();
+        await flushPendingEvents();
+      } catch (e) {
+        console.warn(e);
+        if (snap.pendingEvents.length || snap.pending) await Storage.enqueueSync(snap);
+      }
+    } else if (snap.pendingEvents.length || snap.pending) {
+      await Storage.enqueueSync(snap);
+    }
+  }
+  await Storage.clearActiveTurn();
+  turn = null;
+  toast(msg);
+  showScreen("screenHome");
+  refreshHomeButtons();
+}
+
+async function processPendingSyncQueue() {
+  if (!(await canSyncNow())) return;
+  const rows = await Storage.listPendingSync();
+  for (const row of rows) {
+    turn = row.snap;
+    try {
+      await syncPendingTurn();
+      await flushPendingEvents();
+      if (turn?.id) await patchEncerramentoTurno(turn.hora_fim_turno, turn.horimetro_fim_turno);
+      await Storage.dropPendingSync(row.client_turn_id);
+    } catch (e) {
+      console.warn("Fila sync", e);
+    }
+  }
+  turn = null;
+}
+
+async function patchEncerramentoTurno(horaFim, hr) {
+  const body = {
+    status: "ENCERRADO",
+    hora_fim_turno: horaFim,
+    horimetro_fim_turno: hr,
+    encerrado_em: new Date().toISOString(),
+    estado_jornada: "TURNO_ENCERRADO",
+    sync_status: "SINCRONIZADO",
+  };
+  if (await canSyncNow() && turn?.id) {
+    await sbPatch("campo_turno", `id=eq.${turn.id}`, body);
+  } else if (turn) {
+    Object.assign(turn, body);
+    turn.sync_status = "PENDENTE";
+    await Storage.saveActiveTurn(turn);
+  }
+}
+
 async function syncPendingTurn() {
-  if (!turn?.pending || !(await canSyncNow())) return false;
+  if (!(await canSyncNow()) || !turn) return false;
+  if (!turn.pending && !(turn.pendingEvents?.length)) return false;
   const payload = {
     client_turn_id: turn.client_turn_id,
     data: turn.data,
@@ -204,7 +277,7 @@ async function syncPendingTurn() {
     if (!ins?.[0]?.id) throw new Error("Turno não gravado");
     existing = ins[0];
   }
-  const pending = [...(turn.pendingEvents || [])];
+  let pending = dedupePendingEvents(turn.pendingEvents);
   turn = {
     ...existing,
     ...turn,
@@ -214,14 +287,54 @@ async function syncPendingTurn() {
   };
   turn.seq = await loadTurnMaxSeq();
   for (const row of pending) {
+    if (row.codigo_evento === "FINAL_TURNO") {
+      const dup = await sbGet(
+        "fato_evento_campo",
+        `id_turno=eq.${turn.id}&codigo_evento=eq.FINAL_TURNO&select=id&limit=1`
+      );
+      if (dup?.length) continue;
+    }
     const ev = { ...row, id_turno: turn.id };
+    if (!ev.seq || ev.seq <= (turn.seq || 0)) {
+      ev.seq = (turn.seq || 0) + 1;
+    }
     const insEv = await sbPost("fato_evento_campo", ev);
     const seq = insEv?.[0]?.seq;
     if (seq && seq > (turn.seq || 0)) turn.seq = seq;
   }
-  if (turn.estado_jornada === "OPERACAO_ATIVA") {
+  const fin = pending.find((e) => e.codigo_evento === "FINAL_TURNO");
+  if (fin) {
+    await patchEncerramentoTurno(fin.hora, fin.horimetro);
+  } else if (turn.estado_jornada === "OPERACAO_ATIVA") {
     await sbPatch("campo_turno", `id=eq.${turn.id}`, { estado_jornada: "OPERACAO_ATIVA" });
   }
+  await Storage.saveActiveTurn(turn);
+  return true;
+}
+
+/** Envia eventos locais de turno já gravado no servidor (ex.: fim offline com id). */
+async function flushPendingEvents() {
+  if (!turn?.id || !(await canSyncNow())) return false;
+  const queue = dedupePendingEvents(turn.pendingEvents);
+  if (!queue.length) return false;
+  turn.seq = await loadTurnMaxSeq();
+  for (const row of queue) {
+    if (row.codigo_evento === "FINAL_TURNO") {
+      const dup = await sbGet(
+        "fato_evento_campo",
+        `id_turno=eq.${turn.id}&codigo_evento=eq.FINAL_TURNO&select=id&limit=1`
+      );
+      if (dup?.length) continue;
+    }
+    const ev = { ...row, id_turno: turn.id };
+    if (!ev.seq || ev.seq <= (turn.seq || 0)) ev.seq = (turn.seq || 0) + 1;
+    const insEv = await sbPost("fato_evento_campo", ev);
+    const seq = insEv?.[0]?.seq;
+    if (seq && seq > (turn.seq || 0)) turn.seq = seq;
+  }
+  const fin = queue.find((e) => e.codigo_evento === "FINAL_TURNO");
+  if (fin) await patchEncerramentoTurno(fin.hora, fin.horimetro);
+  turn.pendingEvents = [];
   await Storage.saveActiveTurn(turn);
   return true;
 }
@@ -332,12 +445,23 @@ function fillSelect(sel, items, valueKey, labelFn) {
 }
 
 async function initCatalogs() {
-  catalog = await getCatalogs();
+  try {
+    catalog = await getCatalogs();
+  } catch (e) {
+    const cached = await Storage.getCatalog("main");
+    if (cached) {
+      catalog = cached;
+      console.warn("Catálogo do aparelho (offline):", e);
+    } else {
+      throw e;
+    }
+  }
   fillSelect($("operacao"), catalog.operacoes, "id", (o) => o.nome);
   fillSelect($("origemLoc"), catalog.locais, "id", (l) => l.nome);
   fillSelect($("destinoLoc"), catalog.locais, "id", (l) => l.nome);
   fillSelect($("retiro"), catalog.locais, "id", (l) => l.nome);
   fillFrotaOperadorSelects();
+  onOperacaoChange();
 }
 
 async function nextSeq() {
@@ -666,13 +790,17 @@ async function onEventClick(codigo) {
     );
     if (!Number.isFinite(hr)) return;
     await registerEvent("FIM_OPERACAO", { hora: horaFim, horimetro: hr });
-    if (turn.id_ciclo) {
-      await sbPatch("campo_ciclo_operacao", `id=eq.${turn.id_ciclo}`, {
-        status: "FINALIZADO",
-        hora_fim: horaFim,
-        horimetro_fim: hr,
-        fechado_em: new Date().toISOString(),
-      });
+    if (turn.id_ciclo && (await canSyncNow())) {
+      try {
+        await sbPatch("campo_ciclo_operacao", `id=eq.${turn.id_ciclo}`, {
+          status: "FINALIZADO",
+          hora_fim: horaFim,
+          horimetro_fim: hr,
+          fechado_em: new Date().toISOString(),
+        });
+      } catch (e) {
+        if (!isNetworkError(e)) throw e;
+      }
     }
     turn.ciclo_ativo = false;
     turn.insumo_lancado_talhao = false;
@@ -711,6 +839,11 @@ async function onEventClick(codigo) {
     return;
   }
   if (codigo === "FINAL_TURNO") {
+    if (turn._fechandoTurno) return;
+    if ((turn.pendingEvents || []).some((e) => e.codigo_evento === "FINAL_TURNO")) {
+      await fecharTurnoNaUI("Fim turno já registrado — volte ao início");
+      return;
+    }
     if (turn.ciclo_ativo !== false) {
       toast("Use «Fim operação» no talhão antes de encerrar o turno.");
       return;
@@ -733,26 +866,40 @@ async function onEventClick(codigo) {
       turn._fimTurnoSemRetornoPending = false;
       await Storage.saveActiveTurn(turn);
     }
+    if (await canSyncNow() && turn.id) {
+      const dup = await sbGet(
+        "fato_evento_campo",
+        `id_turno=eq.${turn.id}&codigo_evento=eq.FINAL_TURNO&select=id&limit=1`
+      );
+      if (dup?.length) {
+        await fecharTurnoNaUI("Turno já encerrado no servidor");
+        return;
+      }
+    }
     const horaFim = promptHora("Horário fim turno (na sede)", nowTime());
     if (!horaFim) return;
     const hr = parseFloat(
       prompt("Horímetro fim turno (na sede):", String(turn.last_hr ?? ""))
     );
     if (!Number.isFinite(hr)) return;
-    await registerEvent("FINAL_TURNO", { hora: horaFim, horimetro: hr });
-    await sbPatch("campo_turno", `id=eq.${turn.id}`, {
-      status: "ENCERRADO",
-      hora_fim_turno: horaFim,
-      horimetro_fim_turno: hr,
-      encerrado_em: new Date().toISOString(),
-      estado_jornada: "TURNO_ENCERRADO",
-      sync_status: "SINCRONIZADO",
-    });
-    await Storage.clearActiveTurn();
-    turn = null;
-    toast("Turno encerrado");
-    showScreen("screenHome");
-    refreshHomeButtons();
+    turn._fechandoTurno = true;
+    try {
+      await registerEvent("FINAL_TURNO", { hora: horaFim, horimetro: hr });
+      turn.ciclo_ativo = false;
+      turn.fase_pos_fim = false;
+      turn.insumos_talhao_concluido = true;
+      try {
+        await patchEncerramentoTurno(horaFim, hr);
+      } catch (e) {
+        if (!isNetworkError(e)) throw e;
+      }
+      await fecharTurnoNaUI();
+    } finally {
+      if (turn) {
+        turn._fechandoTurno = false;
+        await Storage.saveActiveTurn(turn);
+      }
+    }
     return;
   }
   await registerEvent(codigo, {});
@@ -1021,8 +1168,29 @@ function showJourney() {
 function onOperacaoChange() {
   const op = selectedOperacao();
   const wrap = $("wrapDeslocEscolha");
-  if (!op) return;
-  wrap.classList.toggle("hidden", op.deslocamento_modo !== "OPCIONAL");
+  const fixo = $("wrapDeslocFixo");
+  if (!op) {
+    wrap.classList.add("hidden");
+    fixo.classList.add("hidden");
+    return;
+  }
+  const modo = op.deslocamento_modo || "OPCIONAL";
+  if (modo === "OPCIONAL") {
+    wrap.classList.remove("hidden");
+    fixo.classList.add("hidden");
+  } else {
+    wrap.classList.add("hidden");
+    fixo.classList.remove("hidden");
+    if (modo === "NUNCA") {
+      $("deslocFixoHint").textContent =
+        "Não — operação na sede/pátio ou retiro (sem etapas de deslocamento no wizard).";
+    } else if (modo === "SEMPRE") {
+      $("deslocFixoHint").textContent =
+        "Sim — deslocamento obrigatório (você passará pelas etapas 2 e 3: saída e chegada).";
+    } else {
+      $("deslocFixoHint").textContent = `Modo cadastro: ${modo}`;
+    }
+  }
 }
 
 async function boot() {
@@ -1042,9 +1210,14 @@ async function boot() {
     $("syncLabel").textContent = `Catálogo: OK · ${APP_VERSION}`;
     $("syncLabel").className = "ok";
   } catch (e) {
-    $("syncLabel").textContent = "Catálogo: erro";
-    toast(e.message);
+    $("syncLabel").textContent = `Sem catálogo · ${APP_VERSION}`;
+    $("syncLabel").className = "warn";
+    toast(
+      "Este celular nunca baixou o catálogo. Com sinal: abra o app e aguarde «Catálogo: OK» antes de ir ao pátio.",
+      9000
+    );
   }
+  showScreen("screenHome");
 
   const saved = await Storage.getActiveTurn();
   if (saved?.id || saved?.pending) {
@@ -1056,13 +1229,14 @@ async function boot() {
     }
   }
   refreshHomeButtons();
-  if (turn?.pending) {
-    try {
+  try {
+    await processPendingSyncQueue();
+    if (turn?.pending) {
       await syncPendingTurn();
       toast("Turno sincronizado");
-    } catch (e) {
-      console.warn(e);
     }
+  } catch (e) {
+    console.warn(e);
   }
 
   wirePickCombos();
@@ -1165,9 +1339,8 @@ async function boot() {
   $("btnSync").addEventListener("click", async () => {
     try {
       await refreshNetStatus();
-      if (turn?.pending) {
-        await syncPendingTurn();
-      }
+      await syncPendingTurn();
+      await flushPendingEvents();
       await loadCatalogsOnline();
       await initCatalogs();
       await refreshTimeline();
