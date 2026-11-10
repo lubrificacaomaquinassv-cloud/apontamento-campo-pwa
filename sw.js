@@ -1,4 +1,4 @@
-const CACHE_NAME = "campo-sv-v14";
+const CACHE_NAME = "campo-sv-v16";
 const ASSETS = [
   "./",
   "./index.html",
@@ -33,15 +33,24 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (url.origin.includes("supabase.co")) return;
   e.respondWith(
-    caches.match(e.request).then((cached) => {
-      const fetched = fetch(e.request).then((res) => {
+    (async () => {
+      const cached = await caches.match(e.request);
+      try {
+        const res = await fetch(e.request);
         if (res.ok) {
           const clone = res.clone();
-          caches.open(CACHE_NAME).then((c) => c.put(e.request, clone));
+          const c = await caches.open(CACHE_NAME);
+          await c.put(e.request, clone);
         }
         return res;
-      });
-      return cached || fetched;
-    })
+      } catch (_err) {
+        if (cached) return cached;
+        if (e.request.mode === "navigate") {
+          const home = await caches.match("./index.html");
+          if (home) return home;
+        }
+        throw _err;
+      }
+    })()
   );
 });
