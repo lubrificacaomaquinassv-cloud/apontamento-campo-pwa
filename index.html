@@ -56,8 +56,13 @@
         <div class="field"><label for="horaTurno">Início turno (hora)</label><input type="time" id="horaTurno" required /></div>
         <div class="field"><label for="hrTurno">Horímetro início turno</label><input type="number" id="hrTurno" step="0.1" min="0" required /></div>
         <div class="field hidden" id="wrapDeslocEscolha">
-          <label>Este turno terá deslocamento até o campo?</label>
+          <label>Deslocamento até o campo?</label>
           <select id="modoDesloc"><option value="SEM">Não</option><option value="COM">Sim</option></select>
+          <p class="field-hint">Pergunta obrigatória para esta operação.</p>
+        </div>
+        <div class="field hidden" id="wrapDeslocFixo">
+          <label>Deslocamento</label>
+          <p class="field-hint desloc-fixo" id="deslocFixoHint">—</p>
         </div>
         <button type="button" class="btn-primary" id="btnStep1Next">Continuar</button>
       </div>
@@ -143,12 +148,15 @@
   <div class="toast hidden" id="toast"></div>
 
   <script src="config.js"></script>
-  <script src="js/storage.js?v=17"></script>
-  <script src="js/api.js?v=17"></script>
-  <script src="js/app.js?v=17"></script>
+  <script src="js/storage.js?v=20"></script>
+  <script src="js/api.js?v=20"></script>
+  <script src="js/app.js?v=20"></script>
   <script>
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js?v=17").catch(console.warn);
+      navigator.serviceWorker
+        .register("./sw.js?v=20")
+        .then((reg) => reg.update())
+        .catch(console.warn);
     }
   </script>
 </body>
