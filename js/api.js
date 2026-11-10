@@ -51,6 +51,24 @@ async function sbPatch(table, query, body) {
   }
 }
 
+let _reach = { at: 0, ok: false };
+
+/** Celular pode marcar “online” sem alcançar o Supabase (sinal fraco na fazenda). */
+async function canSyncNow() {
+  if (!navigator.onLine) return false;
+  const age = Date.now() - _reach.at;
+  if (age < 20000 && age >= 0) return _reach.ok;
+  try {
+    await sbGet("dim_evento_campo", "select=codigo&limit=1");
+    _reach = { at: Date.now(), ok: true };
+    return true;
+  } catch (e) {
+    console.warn("Sem Supabase agora:", e);
+    _reach = { at: Date.now(), ok: false };
+    return false;
+  }
+}
+
 async function loadCatalogsOnline() {
   const [operacoes, eventos, insumos, locais, colaboradores, frotas] = await Promise.all([
     sbGet("dim_operacao_campo", "select=id,codigo,nome,exige_talhao,exige_insumo,deslocamento_modo&ativo=eq.true&order=ordem"),
@@ -69,7 +87,7 @@ async function loadCatalogsOnline() {
 }
 
 async function getCatalogs() {
-  if (navigator.onLine) {
+  if (await canSyncNow()) {
     try {
       return await loadCatalogsOnline();
     } catch (e) {
@@ -78,7 +96,9 @@ async function getCatalogs() {
   }
   const cached = await Storage.getCatalog("main");
   if (cached) return cached;
-  throw new Error("Sem catálogo offline. Conecte-se uma vez.");
+  throw new Error(
+    "Sem catálogo offline. Com Wi‑Fi ou 4G estável, abra o app uma vez e aguarde «Catálogo: OK»."
+  );
 }
 
 async function findOpenTurn(data, frota, operador) {
