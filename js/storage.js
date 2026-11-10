@@ -69,4 +69,24 @@ const Storage = {
   async clearActiveTurn() {
     await idbDelete("active_turn", "current");
   },
+  async enqueueSync(snap) {
+    if (!snap?.client_turn_id) return;
+    await idbPut("pending_sync", {
+      client_turn_id: snap.client_turn_id,
+      snap,
+      queued_at: new Date().toISOString(),
+    });
+  },
+  async listPendingSync() {
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("pending_sync", "readonly");
+      const req = tx.objectStore("pending_sync").getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  },
+  async dropPendingSync(clientTurnId) {
+    await idbDelete("pending_sync", clientTurnId);
+  },
 };
