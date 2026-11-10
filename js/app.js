@@ -76,7 +76,74 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v16";
+const APP_VERSION = "v17";
+
+const PICK_OUTRO = "__OUTRO__";
+
+function readFrota() {
+  const pick = $("frotaPick").value;
+  if (pick === PICK_OUTRO) return ($("frotaOutro").value || "").trim().toUpperCase();
+  return (pick || "").trim().toUpperCase();
+}
+
+function readOperador() {
+  const pick = $("operadorPick").value;
+  if (pick === PICK_OUTRO) return ($("operadorOutro").value || "").trim().toUpperCase();
+  return (pick || "").trim().toUpperCase();
+}
+
+function wirePickCombos() {
+  const frotaPick = $("frotaPick");
+  const opPick = $("operadorPick");
+  frotaPick.addEventListener("change", () => {
+    const outro = frotaPick.value === PICK_OUTRO;
+    $("wrapFrotaOutro").classList.toggle("hidden", !outro);
+    if (outro) $("frotaOutro").focus();
+    else frotaPick.blur();
+  });
+  opPick.addEventListener("change", () => {
+    const outro = opPick.value === PICK_OUTRO;
+    $("wrapOperadorOutro").classList.toggle("hidden", !outro);
+    if (outro) $("operadorOutro").focus();
+    else opPick.blur();
+  });
+}
+
+function fillFrotaOperadorSelects() {
+  const frotaSel = $("frotaPick");
+  frotaSel.innerHTML = "";
+  const phF = document.createElement("option");
+  phF.value = "";
+  phF.textContent = "Selecione a frota";
+  frotaSel.appendChild(phF);
+  for (const f of catalog.frotas || []) {
+    const opt = document.createElement("option");
+    opt.value = String(f.id_frota);
+    opt.textContent = f.modelo ? `${f.id_frota} — ${f.modelo}` : String(f.id_frota);
+    frotaSel.appendChild(opt);
+  }
+  const outF = document.createElement("option");
+  outF.value = PICK_OUTRO;
+  outF.textContent = "Outra frota (digitar)";
+  frotaSel.appendChild(outF);
+
+  const opSel = $("operadorPick");
+  opSel.innerHTML = "";
+  const phO = document.createElement("option");
+  phO.value = "";
+  phO.textContent = "Selecione o operador";
+  opSel.appendChild(phO);
+  for (const c of catalog.colaboradores || []) {
+    const opt = document.createElement("option");
+    opt.value = String(c.nome);
+    opt.textContent = String(c.nome);
+    opSel.appendChild(opt);
+  }
+  const outO = document.createElement("option");
+  outO.value = PICK_OUTRO;
+  outO.textContent = "Outro nome (digitar)";
+  opSel.appendChild(outO);
+}
 
 function isNetworkError(e) {
   const m = String(e?.message || e || "").toLowerCase();
@@ -270,12 +337,7 @@ async function initCatalogs() {
   fillSelect($("origemLoc"), catalog.locais, "id", (l) => l.nome);
   fillSelect($("destinoLoc"), catalog.locais, "id", (l) => l.nome);
   fillSelect($("retiro"), catalog.locais, "id", (l) => l.nome);
-  $("frotaList").innerHTML = catalog.frotas
-    .map((f) => `<option value="${f.id_frota}">`)
-    .join("");
-  $("operadorList").innerHTML = catalog.colaboradores
-    .map((c) => `<option value="${c.nome}">`)
-    .join("");
+  fillFrotaOperadorSelects();
 }
 
 async function nextSeq() {
@@ -755,8 +817,10 @@ async function startWizardFlow() {
     return false;
   }
   const hrTurno = parseFloat($("hrTurno").value);
-  if (!$("frota").value.trim() || !$("operador").value.trim()) {
-    toast("Preencha frota e operador");
+  const frotaVal = readFrota();
+  const operadorVal = readOperador();
+  if (!frotaVal || !operadorVal) {
+    toast("Selecione (ou digite) frota e operador");
     return false;
   }
   if (!Number.isFinite(hrTurno)) {
@@ -768,8 +832,8 @@ async function startWizardFlow() {
   const payload = {
     client_turn_id: crypto.randomUUID(),
     data: $("dataOp").value,
-    id_frota: $("frota").value.trim().toUpperCase(),
-    operador: $("operador").value.trim().toUpperCase(),
+    id_frota: frotaVal,
+    operador: operadorVal,
     id_operacao_campo: op.id,
     operacao_nome: op.nome,
     modo_deslocamento: modo,
@@ -1001,6 +1065,7 @@ async function boot() {
     }
   }
 
+  wirePickCombos();
   $("operacao").addEventListener("change", onOperacaoChange);
   onOperacaoChange();
 
