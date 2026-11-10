@@ -48,10 +48,10 @@
       <div id="step1">
         <div class="sec">Etapa 1 — Jornada</div>
         <div class="field"><label for="dataOp">Data</label><input type="date" id="dataOp" required /></div>
-        <div class="field"><label for="frota">Frota</label><input type="text" id="frota" list="frotaList" required /></div>
-        <datalist id="frotaList"></datalist>
-        <div class="field"><label for="operador">Operador</label><input type="text" id="operador" list="operadorList" required /></div>
-        <datalist id="operadorList"></datalist>
+        <div class="field"><label for="frotaPick">Frota</label><select id="frotaPick" required></select></div>
+        <div class="field hidden" id="wrapFrotaOutro"><label for="frotaOutro">Digite a frota</label><input type="text" id="frotaOutro" inputmode="text" autocomplete="off" placeholder="Ex: 3396" /></div>
+        <div class="field"><label for="operadorPick">Operador</label><select id="operadorPick" required></select></div>
+        <div class="field hidden" id="wrapOperadorOutro"><label for="operadorOutro">Digite o operador</label><input type="text" id="operadorOutro" inputmode="text" autocomplete="off" placeholder="Nome como no SIGRH" /></div>
         <div class="field"><label for="operacao">Operação</label><select id="operacao" required></select></div>
         <div class="field"><label for="horaTurno">Início turno (hora)</label><input type="time" id="horaTurno" required /></div>
         <div class="field"><label for="hrTurno">Horímetro início turno</label><input type="number" id="hrTurno" step="0.1" min="0" required /></div>
@@ -143,12 +143,12 @@
   <div class="toast hidden" id="toast"></div>
 
   <script src="config.js"></script>
-  <script src="js/storage.js?v=16"></script>
-  <script src="js/api.js?v=16"></script>
-  <script src="js/app.js?v=16"></script>
+  <script src="js/storage.js?v=17"></script>
+  <script src="js/api.js?v=17"></script>
+  <script src="js/app.js?v=17"></script>
   <script>
     if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js?v=16").catch(console.warn);
+      navigator.serviceWorker.register("./sw.js?v=17").catch(console.warn);
     }
   </script>
 </body>
