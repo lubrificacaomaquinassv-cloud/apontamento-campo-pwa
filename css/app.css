@@ -1,5 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700&display=swap");
-
 :root {
   --bg: #0a1409;
   --surface: #111c10;
@@ -18,7 +16,7 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body {
   margin: 0; padding: 0; background: var(--bg); color: var(--text);
-  font-family: "Barlow Condensed", system-ui, sans-serif; min-height: 100vh;
+  font-family: system-ui, "Segoe UI", sans-serif; min-height: 100vh;
 }
 .app { max-width: 480px; margin: 0 auto; padding: 12px 14px 28px; }
 .hidden { display: none !important; }
@@ -63,6 +61,10 @@ html, body {
   font-family: inherit;
 }
 .field-hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
+.field-hint.desloc-fixo {
+  padding: 10px 12px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: 10px; color: var(--text); font-size: 14px; line-height: 1.4;
+}
 
 .progress { display: flex; gap: 6px; margin-bottom: 14px; }
 .progress span {
@@ -106,4 +108,14 @@ html, body {
   position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
   background: #152515; border: 1px solid var(--accent); padding: 10px 16px;
   border-radius: 10px; z-index: 50; max-width: 90%;
+}
+
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.72); z-index: 40;
+  display: flex; align-items: flex-end; justify-content: center; padding: 12px;
+}
+.modal-panel {
+  width: 100%; max-width: 480px; max-height: 90vh; overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 16px 16px 0 0;
+  padding: 8px 14px 20px;
 }
