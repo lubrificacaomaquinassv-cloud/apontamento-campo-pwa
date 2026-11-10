@@ -76,7 +76,88 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v14";
+const APP_VERSION = "v16";
+
+function isNetworkError(e) {
+  const m = String(e?.message || e || "").toLowerCase();
+  return (
+    m.includes("failed to fetch") ||
+    m.includes("network") ||
+    m.includes("load failed") ||
+    m.includes("err_internet") ||
+    m.includes("err_connection") ||
+    m.includes("aborterror")
+  );
+}
+
+async function createOfflineTurn(payload, op, modo) {
+  turn = {
+    ...payload,
+    seq: 1,
+    pending: true,
+    exige_insumo: op.exige_insumo,
+    desloc_retorno_concluido: modo !== "COM",
+    ciclo_ativo: false,
+    fase_pos_fim: false,
+    pendingEvents: [
+      {
+        client_event_id: crypto.randomUUID(),
+        seq: 1,
+        codigo_evento: "INICIO_TURNO",
+        hora: payload.hora_inicio_turno,
+        horimetro: payload.horimetro_inicio_turno,
+        origem: "PWA",
+      },
+    ],
+  };
+  await Storage.saveActiveTurn(turn);
+  toast("Sem servidor — lançamento no aparelho (sincronize quando tiver 4G/Wi‑Fi).", 7500);
+  return true;
+}
+
+async function syncPendingTurn() {
+  if (!turn?.pending || !(await canSyncNow())) return false;
+  const payload = {
+    client_turn_id: turn.client_turn_id,
+    data: turn.data,
+    id_frota: turn.id_frota,
+    operador: turn.operador,
+    id_operacao_campo: turn.id_operacao_campo,
+    operacao_nome: turn.operacao_nome,
+    modo_deslocamento: turn.modo_deslocamento,
+    status: turn.status || "ABERTO",
+    estado_jornada: turn.estado_jornada || "TURNO_ABERTO",
+    hora_inicio_turno: turn.hora_inicio_turno,
+    horimetro_inicio_turno: turn.horimetro_inicio_turno,
+    sync_status: "PENDENTE",
+  };
+  let existing = await findOpenTurn(payload.data, payload.id_frota, payload.operador);
+  if (!existing) {
+    const ins = await sbPost("campo_turno", payload);
+    if (!ins?.[0]?.id) throw new Error("Turno não gravado");
+    existing = ins[0];
+  }
+  const pending = [...(turn.pendingEvents || [])];
+  turn = {
+    ...existing,
+    ...turn,
+    id: existing.id,
+    pending: false,
+    pendingEvents: [],
+  };
+  turn.seq = await loadTurnMaxSeq();
+  for (const row of pending) {
+    const ev = { ...row, id_turno: turn.id };
+    const insEv = await sbPost("fato_evento_campo", ev);
+    const seq = insEv?.[0]?.seq;
+    if (seq && seq > (turn.seq || 0)) turn.seq = seq;
+  }
+  if (turn.estado_jornada === "OPERACAO_ATIVA") {
+    await sbPatch("campo_turno", `id=eq.${turn.id}`, { estado_jornada: "OPERACAO_ATIVA" });
+  }
+  await Storage.saveActiveTurn(turn);
+  return true;
+}
 
 function toast(msg, ms = 4500) {
   const el = $("toast");
@@ -145,9 +226,27 @@ function setWizardStep(n) {
 
 function updateNetStatus() {
   const on = navigator.onLine;
-  $("offlineBanner").classList.toggle("hidden", on);
-  $("netLabel").textContent = on ? "Rede: online" : "Rede: offline";
+  $("netLabel").textContent = on ? "Rede: verificando…" : "Rede: offline";
   $("netLabel").className = on ? "ok" : "warn";
+  $("offlineBanner").classList.toggle("hidden", on);
+  refreshNetStatus();
+}
+
+async function refreshNetStatus() {
+  const on = navigator.onLine;
+  let label;
+  let warn = true;
+  if (!on) {
+    label = "Rede: offline";
+  } else if (await canSyncNow()) {
+    label = "Rede: online";
+    warn = false;
+  } else {
+    label = "Rede: sem servidor (modo local)";
+  }
+  $("netLabel").textContent = label;
+  $("netLabel").className = warn ? "warn" : "ok";
+  $("offlineBanner").classList.toggle("hidden", !warn);
 }
 
 function selectedOperacao() {
@@ -186,8 +285,7 @@ async function nextSeq() {
 }
 
 async function pushEvent(row) {
-  if (!navigator.onLine) {
-    toast("Offline: evento guardado localmente (sync em breve).");
+  if (!(await canSyncNow())) {
     turn.pendingEvents = turn.pendingEvents || [];
     turn.pendingEvents.push(row);
     await Storage.saveActiveTurn(turn);
@@ -232,9 +330,9 @@ async function registerEvent(codigo, extra = {}) {
 }
 
 async function refreshTimeline() {
-  if (!turn?.id || !navigator.onLine) {
+  if (!turn?.id || !(await canSyncNow())) {
     $("timeline").innerHTML = turn?.pendingEvents?.length
-      ? `<div>${turn.pendingEvents.length} evento(s) pendentes offline</div>`
+      ? `<div>${turn.pendingEvents.length} evento(s) pendentes · sync ao conectar</div>`
       : "<div>—</div>";
     return;
   }
@@ -427,6 +525,7 @@ async function startNextTalhaoFromForm() {
   renderJourneyHead();
   refreshPosCicloUI();
   refreshHomeButtons();
+  renderEventButtons();
   toast(`Talhão ${turn.talhao_codigo} · ${localNome(retiroId)}`);
 }
 
@@ -680,18 +779,8 @@ async function startWizardFlow() {
     horimetro_inicio_turno: hrTurno,
     sync_status: "PENDENTE",
   };
-  if (!navigator.onLine) {
-    turn = {
-      ...payload,
-      seq: 0,
-      pending: true,
-      desloc_retorno_concluido: modo !== "COM",
-      ciclo_ativo: false,
-      fase_pos_fim: false,
-    };
-    await Storage.saveActiveTurn(turn);
-    toast("Offline — continue o wizard; sync depois");
-    return true;
+  if (!(await canSyncNow())) {
+    return createOfflineTurn(payload, op, modo);
   }
   let resumed = false;
   try {
@@ -768,9 +857,12 @@ async function startWizardFlow() {
     return true;
   } catch (e) {
     console.error(e);
+    if (isNetworkError(e)) {
+      return createOfflineTurn(payload, op, modo);
+    }
     let msg = e.message || "Erro ao abrir turno — tente de novo";
     if (msg.includes("PGRST204") || msg.includes("Could not find")) {
-      msg = "Erro de versão do app — publique a v12 ou atualize a página.";
+      msg = "Erro de versão do app — publique a v16 ou atualize a página.";
     } else if (msg.length > 140) {
       msg = msg.slice(0, 140);
     }
@@ -782,7 +874,8 @@ async function startWizardFlow() {
 
 async function finishDeslocAndCiclo() {
   let idDesloc = null;
-  if (turn.modo_deslocamento === "COM" && navigator.onLine) {
+  const online = await canSyncNow();
+  if (turn.modo_deslocamento === "COM" && online) {
     const desloc = await sbPost("fato_deslocamentos", {
       client_desloc_id: crypto.randomUUID(),
       id_turno: turn.id,
@@ -800,13 +893,18 @@ async function finishDeslocAndCiclo() {
       hora: $("horaSaida").value,
       horimetro: parseFloat($("hrSaida").value),
     });
+  } else if (turn.modo_deslocamento === "COM") {
+    await registerEvent("DESLOC_SEDE_FRENTE", {
+      hora: $("horaSaida").value,
+      horimetro: parseFloat($("hrSaida").value),
+    });
   }
   const retiroId = parseInt($("retiro").value, 10);
   turn.talhao_codigo = $("talhaoCod").value.trim() || null;
   turn.retiro_id = retiroId;
   turn.last_hr = parseFloat($("hrOp").value);
 
-  if (navigator.onLine) {
+  if (online && turn.id) {
     const ciclo = await sbPost("campo_ciclo_operacao", {
       id_turno: turn.id,
       seq: 1,
@@ -828,6 +926,20 @@ async function finishDeslocAndCiclo() {
       talhao_codigo: turn.talhao_codigo,
     });
     await sbPatch("campo_turno", `id=eq.${turn.id}`, { estado_jornada: "OPERACAO_ATIVA" });
+  } else {
+    turn.ciclo_seq = 1;
+    turn.ciclo_ativo = true;
+    turn.fase_pos_fim = false;
+    turn.insumos_talhao_concluido = false;
+    turn.insumo_lancado_talhao = false;
+    turn.estado_jornada = "OPERACAO_ATIVA";
+    if (!turn.seq) turn.seq = 0;
+    await registerEvent("INICIO_OPERACAO", {
+      hora: $("horaOp").value,
+      horimetro: turn.last_hr,
+      retiro_id: retiroId,
+      talhao_codigo: turn.talhao_codigo,
+    });
   }
   await Storage.saveActiveTurn(turn);
   showJourney();
@@ -851,7 +963,10 @@ function onOperacaoChange() {
 
 async function boot() {
   updateNetStatus();
-  window.addEventListener("online", updateNetStatus);
+  window.addEventListener("online", () => {
+    updateNetStatus();
+    syncPendingTurn().catch(console.warn);
+  });
   window.addEventListener("offline", updateNetStatus);
 
   $("dataOp").value = todayISO();
@@ -877,6 +992,14 @@ async function boot() {
     }
   }
   refreshHomeButtons();
+  if (turn?.pending) {
+    try {
+      await syncPendingTurn();
+      toast("Turno sincronizado");
+    } catch (e) {
+      console.warn(e);
+    }
+  }
 
   $("operacao").addEventListener("change", onOperacaoChange);
   onOperacaoChange();
@@ -976,9 +1099,16 @@ async function boot() {
 
   $("btnSync").addEventListener("click", async () => {
     try {
+      await refreshNetStatus();
+      if (turn?.pending) {
+        await syncPendingTurn();
+      }
       await loadCatalogsOnline();
+      await initCatalogs();
       await refreshTimeline();
-      toast("Atualizado");
+      renderEventButtons();
+      refreshPosCicloUI();
+      toast("Atualizado / sincronizado");
     } catch (e) {
       toast(e.message);
     }
