@@ -76,73 +76,39 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v20";
-
-const PICK_OUTRO = "__OUTRO__";
+const APP_VERSION = "v21";
 
 function readFrota() {
-  const pick = $("frotaPick").value;
-  if (pick === PICK_OUTRO) return ($("frotaOutro").value || "").trim().toUpperCase();
-  return (pick || "").trim().toUpperCase();
+  const raw = ($("frotaPick").value || "").trim();
+  const m = raw.match(/^(\d+[A-Za-z0-9]*)/);
+  if (m) return m[1].toUpperCase();
+  return raw.toUpperCase();
 }
 
 function readOperador() {
-  const pick = $("operadorPick").value;
-  if (pick === PICK_OUTRO) return ($("operadorOutro").value || "").trim().toUpperCase();
-  return (pick || "").trim().toUpperCase();
+  return ($("operadorPick").value || "").trim().toUpperCase();
 }
 
 function wirePickCombos() {
-  const frotaPick = $("frotaPick");
-  const opPick = $("operadorPick");
-  frotaPick.addEventListener("change", () => {
-    const outro = frotaPick.value === PICK_OUTRO;
-    $("wrapFrotaOutro").classList.toggle("hidden", !outro);
-    if (outro) $("frotaOutro").focus();
-    else frotaPick.blur();
-  });
-  opPick.addEventListener("change", () => {
-    const outro = opPick.value === PICK_OUTRO;
-    $("wrapOperadorOutro").classList.toggle("hidden", !outro);
-    if (outro) $("operadorOutro").focus();
-    else opPick.blur();
-  });
+  /* datalist — sem wiring extra */
 }
 
 function fillFrotaOperadorSelects() {
-  const frotaSel = $("frotaPick");
-  frotaSel.innerHTML = "";
-  const phF = document.createElement("option");
-  phF.value = "";
-  phF.textContent = "Selecione a frota";
-  frotaSel.appendChild(phF);
+  const frotaList = $("frotaDatalist");
+  frotaList.innerHTML = "";
   for (const f of catalog.frotas || []) {
     const opt = document.createElement("option");
-    opt.value = String(f.id_frota);
-    opt.textContent = f.modelo ? `${f.id_frota} — ${f.modelo}` : String(f.id_frota);
-    frotaSel.appendChild(opt);
+    opt.value = f.modelo ? `${f.id_frota} — ${f.modelo}` : String(f.id_frota);
+    frotaList.appendChild(opt);
   }
-  const outF = document.createElement("option");
-  outF.value = PICK_OUTRO;
-  outF.textContent = "Outra frota (digitar)";
-  frotaSel.appendChild(outF);
 
-  const opSel = $("operadorPick");
-  opSel.innerHTML = "";
-  const phO = document.createElement("option");
-  phO.value = "";
-  phO.textContent = "Selecione o operador";
-  opSel.appendChild(phO);
+  const opList = $("operadorDatalist");
+  opList.innerHTML = "";
   for (const c of catalog.colaboradores || []) {
     const opt = document.createElement("option");
     opt.value = String(c.nome);
-    opt.textContent = String(c.nome);
-    opSel.appendChild(opt);
+    opList.appendChild(opt);
   }
-  const outO = document.createElement("option");
-  outO.value = PICK_OUTRO;
-  outO.textContent = "Outro nome (digitar)";
-  opSel.appendChild(outO);
 }
 
 function isNetworkError(e) {
@@ -163,7 +129,8 @@ async function createOfflineTurn(payload, op, modo) {
     seq: 1,
     pending: true,
     exige_insumo: op.exige_insumo,
-    desloc_retorno_concluido: modo !== "COM",
+    desloc_retorno_concluido: false,
+    desloc_retorno_registrado: false,
     ciclo_ativo: false,
     fase_pos_fim: false,
     pendingEvents: [
@@ -383,6 +350,53 @@ function promptHora(label, fallback) {
     return null;
   }
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+function horimetroBaseTurno() {
+  const ini =
+    turn?.horimetro_inicio_turno ?? parseFloat($("hrTurno")?.value);
+  const last = turn?.last_hr;
+  const vals = [ini, last].filter((x) => Number.isFinite(x) && x > 0);
+  return vals.length ? Math.max(...vals) : null;
+}
+
+function normHora(t) {
+  if (!t) return "";
+  const s = String(t).trim();
+  if (s.length >= 5) return s.slice(0, 5);
+  return s;
+}
+
+/** Avisa se horário de relógio igual ao início (permitido se o operador confirmar). */
+function confirmarHoraRelogio(horaFim, referencias, label) {
+  const hf = normHora(horaFim);
+  for (const ref of referencias) {
+    const r = normHora(ref);
+    if (r && hf === r) {
+      return window.confirm(
+        `${label}: ${hf} é igual ao horário ${r} já lançado.\n` +
+          "Confirma que é o relógio correto (e não confundiu com horímetro)?"
+      );
+    }
+  }
+  return true;
+}
+
+function validarHorimetro(hr, label) {
+  if (!Number.isFinite(hr)) return false;
+  const base = horimetroBaseTurno();
+  if (base != null && base > 200 && hr < 200) {
+    toast(
+      `${label}: ${hr} parece HORA, não horímetro. Use o painel da máquina (perto de ${base}).`,
+      8500
+    );
+    return false;
+  }
+  if (base != null && hr < base - 0.3) {
+    toast(`${label}: horímetro deve ser ≥ ${base}`, 7000);
+    return false;
+  }
+  return true;
 }
 
 function todayISO() {
@@ -732,15 +746,20 @@ function renderEventButtons() {
   wrap.innerHTML = "";
   const precisaDesloc =
     turnoExigeDeslocRetorno() && turn.ciclo_ativo === false && !turn.desloc_retorno_concluido;
+  const deslocOpcional =
+    !turnoExigeDeslocRetorno() && turn.ciclo_ativo === false && !turn.desloc_retorno_registrado;
   for (const b of JOURNEY_BUTTONS) {
     if (b.codigo === "LANCAMENTO_INSUMOS" && !operacaoExigeInsumo()) continue;
-    if (b.codigo === "DESLOC_FRENTE_SEDE" && !turnoExigeDeslocRetorno()) continue;
     const btn = document.createElement("button");
     btn.type = "button";
     let cls = "btn-event" + (b.highlight ? " highlight" : "");
-    if (b.codigo === "DESLOC_FRENTE_SEDE" && precisaDesloc) cls += " highlight";
+    if (b.codigo === "DESLOC_FRENTE_SEDE" && (precisaDesloc || deslocOpcional)) cls += " highlight";
     btn.className = cls;
-    btn.innerHTML = `${b.label}<small>${b.hint}</small>`;
+    let hint = b.hint;
+    if (b.codigo === "DESLOC_FRENTE_SEDE" && !turnoExigeDeslocRetorno()) {
+      hint = "Opcional — voltou da frente à tarde";
+    }
+    btn.innerHTML = `${b.label}<small>${hint}</small>`;
     if (b.codigo === "LANCAMENTO_INSUMOS" && turn.ciclo_ativo !== false && !turn.fase_pos_fim) {
       btn.disabled = true;
       btn.innerHTML = `${b.label}<small>Após «Fim operação»</small>`;
@@ -785,10 +804,16 @@ async function onEventClick(codigo) {
     }
     const horaFim = promptHora("Horário fim operação", nowTime());
     if (!horaFim) return;
+    if (
+      !confirmarHoraRelogio(horaFim, [turn.hora_inicio_turno, $("horaTurno")?.value], "Fim operação")
+    ) {
+      return;
+    }
     const hr = parseFloat(
       prompt("Horímetro fim operação:", String(turn.last_hr ?? ""))
     );
     if (!Number.isFinite(hr)) return;
+    if (!validarHorimetro(hr, "Fim operação")) return;
     await registerEvent("FIM_OPERACAO", { hora: horaFim, horimetro: hr });
     if (turn.id_ciclo && (await canSyncNow())) {
       try {
@@ -831,7 +856,7 @@ async function onEventClick(codigo) {
       toast("Encerre o talhão (Fim operação) antes do retorno à sede.");
       return;
     }
-    if (turn.desloc_retorno_concluido) {
+    if (turn.desloc_retorno_registrado) {
       toast("Retorno à sede já registrado — use Fim turno.");
       return;
     }
@@ -882,6 +907,7 @@ async function onEventClick(codigo) {
       prompt("Horímetro fim turno (na sede):", String(turn.last_hr ?? ""))
     );
     if (!Number.isFinite(hr)) return;
+    if (!validarHorimetro(hr, "Fim turno")) return;
     turn._fechandoTurno = true;
     try {
       await registerEvent("FINAL_TURNO", { hora: horaFim, horimetro: hr });
@@ -941,6 +967,7 @@ async function confirmDeslocRetorno() {
     horimetro: hrSaida,
   });
   turn.desloc_retorno_concluido = true;
+  turn.desloc_retorno_registrado = true;
   turn.last_hr = hrChegada;
   await Storage.saveActiveTurn(turn);
   renderJourneyHead();
@@ -1003,7 +1030,8 @@ async function startWizardFlow() {
         exige_insumo: op.exige_insumo,
         operacao_nome: op.nome,
         id_operacao_campo: op.id,
-        desloc_retorno_concluido: existing.desloc_retorno_concluido ?? modo !== "COM",
+        desloc_retorno_concluido: existing.desloc_retorno_concluido ?? false,
+        desloc_retorno_registrado: existing.desloc_retorno_registrado ?? false,
       };
       turn.seq = await loadTurnMaxSeq();
       resumed = true;
@@ -1021,7 +1049,8 @@ async function startWizardFlow() {
           ...ins[0],
           seq: 0,
           exige_insumo: op.exige_insumo,
-          desloc_retorno_concluido: modo !== "COM",
+          desloc_retorno_concluido: false,
+          desloc_retorno_registrado: false,
           ciclo_ativo: false,
           fase_pos_fim: false,
         };
@@ -1050,7 +1079,7 @@ async function startWizardFlow() {
         }
       }
     }
-    if (turn.modo_deslocamento !== "COM") turn.desloc_retorno_concluido = true;
+    if (turn.desloc_retorno_registrado === undefined) turn.desloc_retorno_registrado = false;
 
     if (!resumed) {
       await nextSeq();
@@ -1224,9 +1253,8 @@ async function boot() {
     turn = saved;
     if (turn.ciclo_ativo === undefined && turn.id_ciclo) turn.ciclo_ativo = true;
     if (turn.ciclo_ativo === undefined && !turn.id_ciclo) turn.ciclo_ativo = false;
-    if (turn.desloc_retorno_concluido === undefined) {
-      turn.desloc_retorno_concluido = turn.modo_deslocamento !== "COM";
-    }
+    if (turn.desloc_retorno_concluido === undefined) turn.desloc_retorno_concluido = false;
+    if (turn.desloc_retorno_registrado === undefined) turn.desloc_retorno_registrado = false;
   }
   refreshHomeButtons();
   try {
