@@ -48,17 +48,24 @@
       <div id="step1">
         <div class="sec">Etapa 1 — Jornada</div>
         <div class="field"><label for="dataOp">Data</label><input type="date" id="dataOp" required /></div>
-        <div class="field"><label for="frotaPick">Frota</label><select id="frotaPick" required></select></div>
-        <div class="field hidden" id="wrapFrotaOutro"><label for="frotaOutro">Digite a frota</label><input type="text" id="frotaOutro" inputmode="text" autocomplete="off" placeholder="Ex: 3396" /></div>
-        <div class="field"><label for="operadorPick">Operador</label><select id="operadorPick" required></select></div>
-        <div class="field hidden" id="wrapOperadorOutro"><label for="operadorOutro">Digite o operador</label><input type="text" id="operadorOutro" inputmode="text" autocomplete="off" placeholder="Nome como no SIGRH" /></div>
+        <div class="field">
+          <label for="frotaPick">Frota</label>
+          <input type="text" id="frotaPick" list="frotaDatalist" inputmode="text" autocomplete="off" required placeholder="Digite o número ou escolha na lista" />
+          <datalist id="frotaDatalist"></datalist>
+          <p class="field-hint">Busca rápida: digite «33» para filtrar, ou toque na seta da lista.</p>
+        </div>
+        <div class="field">
+          <label for="operadorPick">Operador</label>
+          <input type="text" id="operadorPick" list="operadorDatalist" inputmode="text" autocomplete="off" required placeholder="Digite o nome ou escolha na lista" />
+          <datalist id="operadorDatalist"></datalist>
+        </div>
         <div class="field"><label for="operacao">Operação</label><select id="operacao" required></select></div>
         <div class="field"><label for="horaTurno">Início turno (hora)</label><input type="time" id="horaTurno" required /></div>
         <div class="field"><label for="hrTurno">Horímetro início turno</label><input type="number" id="hrTurno" step="0.1" min="0" required /></div>
         <div class="field hidden" id="wrapDeslocEscolha">
           <label>Deslocamento até o campo?</label>
-          <select id="modoDesloc"><option value="SEM">Não</option><option value="COM">Sim</option></select>
-          <p class="field-hint">Pergunta obrigatória para esta operação.</p>
+          <select id="modoDesloc"><option value="SEM">Não — já estou na frente / sem saída da sede agora</option><option value="COM">Sim — saio da sede agora (etapas 2 e 3)</option></select>
+          <p class="field-hint">À tarde: outro talhão = «Próximo talhão»; voltar à sede com desloc = botão «Desloc. retorno sede» (opcional se marcou Não).</p>
         </div>
         <div class="field hidden" id="wrapDeslocFixo">
           <label>Deslocamento</label>
@@ -148,13 +155,13 @@
   <div class="toast hidden" id="toast"></div>
 
   <script src="config.js"></script>
-  <script src="js/storage.js?v=20"></script>
-  <script src="js/api.js?v=20"></script>
-  <script src="js/app.js?v=20"></script>
+  <script src="js/storage.js?v=21"></script>
+  <script src="js/api.js?v=21"></script>
+  <script src="js/app.js?v=21"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker
-        .register("./sw.js?v=20")
+        .register("./sw.js?v=21")
         .then((reg) => reg.update())
         .catch(console.warn);
     }
