@@ -9,7 +9,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icons/logo-placa-sv.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="css/app.css" />
+  <link rel="stylesheet" href="css/app.css?v=22" />
 </head>
 <body>
   <div class="app">
@@ -48,16 +48,20 @@
       <div id="step1">
         <div class="sec">Etapa 1 — Jornada</div>
         <div class="field"><label for="dataOp">Data</label><input type="date" id="dataOp" required /></div>
-        <div class="field">
+        <div class="field combo-field">
           <label for="frotaPick">Frota</label>
-          <input type="text" id="frotaPick" list="frotaDatalist" inputmode="text" autocomplete="off" required placeholder="Digite o número ou escolha na lista" />
-          <datalist id="frotaDatalist"></datalist>
-          <p class="field-hint">Busca rápida: digite «33» para filtrar, ou toque na seta da lista.</p>
+          <input type="search" id="frotaPick" autocomplete="off" enterkeyhint="search" placeholder="Digite o número (ex.: 3320)" />
+          <input type="hidden" id="frotaValor" />
+          <div class="combo-sel hidden" id="frotaSelHint">—</div>
+          <div class="combo-list hidden" id="frotaList" role="listbox"></div>
+          <p class="field-hint">Digite e toque na frota da lista para selecionar.</p>
         </div>
-        <div class="field">
+        <div class="field combo-field">
           <label for="operadorPick">Operador</label>
-          <input type="text" id="operadorPick" list="operadorDatalist" inputmode="text" autocomplete="off" required placeholder="Digite o nome ou escolha na lista" />
-          <datalist id="operadorDatalist"></datalist>
+          <input type="search" id="operadorPick" autocomplete="off" enterkeyhint="search" placeholder="Digite o nome" />
+          <input type="hidden" id="operadorValor" />
+          <div class="combo-sel hidden" id="operadorSelHint">—</div>
+          <div class="combo-list hidden" id="operadorList" role="listbox"></div>
         </div>
         <div class="field"><label for="operacao">Operação</label><select id="operacao" required></select></div>
         <div class="field"><label for="horaTurno">Início turno (hora)</label><input type="time" id="horaTurno" required /></div>
@@ -155,13 +159,13 @@
   <div class="toast hidden" id="toast"></div>
 
   <script src="config.js"></script>
-  <script src="js/storage.js?v=21"></script>
-  <script src="js/api.js?v=21"></script>
-  <script src="js/app.js?v=21"></script>
+  <script src="js/storage.js?v=22"></script>
+  <script src="js/api.js?v=22"></script>
+  <script src="js/app.js?v=22"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker
-        .register("./sw.js?v=21")
+        .register("./sw.js?v=22")
         .then((reg) => reg.update())
         .catch(console.warn);
     }
