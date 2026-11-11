@@ -60,6 +60,27 @@ html, body {
   border: 1px solid var(--border); background: var(--field-bg); color: var(--field-text);
   font-family: inherit;
 }
+.combo-field { position: relative; }
+.combo-list {
+  position: absolute; left: 0; right: 0; z-index: 30;
+  max-height: 220px; overflow-y: auto;
+  background: var(--field-bg); color: var(--field-text);
+  border: 1px solid var(--border); border-radius: 0 0 10px 10px;
+  margin-top: -2px;
+}
+.combo-item {
+  width: 100%; text-align: left; padding: 12px;
+  font-size: 16px; font-family: inherit; border: none;
+  background: transparent; color: var(--field-text); cursor: pointer;
+  border-bottom: 1px solid #c5d4b8;
+}
+.combo-item:last-child { border-bottom: none; }
+.combo-item:active, .combo-item:hover { background: #cfe0c4; }
+.combo-sel {
+  margin-top: 6px; padding: 8px 10px; border-radius: 8px;
+  background: var(--highlight); border: 1px solid var(--accent);
+  color: var(--accent-light); font-size: 14px; font-weight: 700;
+}
 .field-hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .field-hint.desloc-fixo {
   padding: 10px 12px; background: var(--surface); border: 1px solid var(--border);
