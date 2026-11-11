@@ -76,9 +76,18 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v21";
+const APP_VERSION = "v22";
+
+function foldTxt(s) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+}
 
 function readFrota() {
+  const hid = ($("frotaValor")?.value || "").trim();
+  if (hid) return hid.toUpperCase();
   const raw = ($("frotaPick").value || "").trim();
   const m = raw.match(/^(\d+[A-Za-z0-9]*)/);
   if (m) return m[1].toUpperCase();
@@ -86,29 +95,122 @@ function readFrota() {
 }
 
 function readOperador() {
+  const hid = ($("operadorValor")?.value || "").trim();
+  if (hid) return hid.toUpperCase();
   return ($("operadorPick").value || "").trim().toUpperCase();
 }
 
+function setComboSelecionado(valorId, hintId, valor, rotulo) {
+  $(valorId).value = valor || "";
+  const hint = $(hintId);
+  if (!valor) {
+    hint.classList.add("hidden");
+    hint.textContent = "—";
+    return;
+  }
+  hint.textContent = `Selecionado: ${rotulo || valor}`;
+  hint.classList.remove("hidden");
+}
+
+function renderComboList(listEl, items, onPick) {
+  listEl.innerHTML = "";
+  if (!items.length) {
+    listEl.classList.add("hidden");
+    return;
+  }
+  for (const it of items.slice(0, 12)) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "combo-item";
+    btn.textContent = it.label;
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      onPick(it);
+    });
+    listEl.appendChild(btn);
+  }
+  listEl.classList.remove("hidden");
+}
+
+function wireCombo({ inputId, listId, valorId, hintId, getItems }) {
+  const inp = $(inputId);
+  const list = $(listId);
+  const filtrar = () => {
+    const q = foldTxt(inp.value);
+    const all = getItems();
+    if (!q) {
+      renderComboList(list, all.slice(0, 12), pick);
+      return;
+    }
+    const hits = all.filter((it) => foldTxt(it.label).includes(q) || foldTxt(it.value).includes(q));
+    renderComboList(list, hits, pick);
+  };
+  const pick = (it) => {
+    inp.value = it.value;
+    setComboSelecionado(valorId, hintId, it.value, it.label);
+    list.classList.add("hidden");
+    inp.blur();
+  };
+  inp.addEventListener("focus", filtrar);
+  inp.addEventListener("input", () => {
+    setComboSelecionado(valorId, hintId, "", "");
+    filtrar();
+  });
+  inp.addEventListener("blur", () => {
+    setTimeout(() => list.classList.add("hidden"), 180);
+    const typed = (inp.value || "").trim();
+    if (!typed) {
+      setComboSelecionado(valorId, hintId, "", "");
+      return;
+    }
+    const all = getItems();
+    const exact = all.find(
+      (it) => foldTxt(it.value) === foldTxt(typed) || foldTxt(it.label) === foldTxt(typed)
+    );
+    if (exact) {
+      inp.value = exact.value;
+      setComboSelecionado(valorId, hintId, exact.value, exact.label);
+      return;
+    }
+    const starts = all.filter(
+      (it) => foldTxt(it.value).startsWith(foldTxt(typed)) || foldTxt(it.label).startsWith(foldTxt(typed))
+    );
+    if (starts.length === 1) {
+      inp.value = starts[0].value;
+      setComboSelecionado(valorId, hintId, starts[0].value, starts[0].label);
+      return;
+    }
+    setComboSelecionado(valorId, hintId, typed, typed);
+  });
+}
+
 function wirePickCombos() {
-  /* datalist — sem wiring extra */
+  wireCombo({
+    inputId: "frotaPick",
+    listId: "frotaList",
+    valorId: "frotaValor",
+    hintId: "frotaSelHint",
+    getItems: () =>
+      (catalog?.frotas || []).map((f) => ({
+        value: String(f.id_frota),
+        label: f.modelo ? `${f.id_frota} — ${f.modelo}` : String(f.id_frota),
+      })),
+  });
+  wireCombo({
+    inputId: "operadorPick",
+    listId: "operadorList",
+    valorId: "operadorValor",
+    hintId: "operadorSelHint",
+    getItems: () =>
+      (catalog?.colaboradores || []).map((c) => ({
+        value: String(c.nome),
+        label: String(c.nome),
+      })),
+  });
 }
 
 function fillFrotaOperadorSelects() {
-  const frotaList = $("frotaDatalist");
-  frotaList.innerHTML = "";
-  for (const f of catalog.frotas || []) {
-    const opt = document.createElement("option");
-    opt.value = f.modelo ? `${f.id_frota} — ${f.modelo}` : String(f.id_frota);
-    frotaList.appendChild(opt);
-  }
-
-  const opList = $("operadorDatalist");
-  opList.innerHTML = "";
-  for (const c of catalog.colaboradores || []) {
-    const opt = document.createElement("option");
-    opt.value = String(c.nome);
-    opList.appendChild(opt);
-  }
+  /* lista montada na digitação (wirePickCombos) */
 }
 
 function isNetworkError(e) {
