@@ -57,6 +57,10 @@ function insumoCicloId() {
 
 async function concluirInsumosTalhao() {
   if (!turn?.fase_pos_fim) {
+    if (turn?.insumos_talhao_concluido && turn.ciclo_ativo === false) {
+      startNextTalhao();
+      return;
+    }
     toast("Nada pendente neste talhão.");
     return;
   }
@@ -76,7 +80,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v22";
+const APP_VERSION = "v23";
 
 function foldTxt(s) {
   return String(s || "")
@@ -436,9 +440,21 @@ function nowTime() {
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+/** Última hora digitada no lançamento — não o relógio do celular. */
+function horaPadrao() {
+  const last = normHora(turn?.last_hora);
+  return last || nowTime();
+}
+
+function lembrarHora(h) {
+  const n = normHora(h);
+  if (n && turn) turn.last_hora = n;
+  return n;
+}
+
 /** Pergunta horário real do fato (lançamento no fim do dia). */
 function promptHora(label, fallback) {
-  const def = fallback || nowTime();
+  const def = fallback || horaPadrao();
   const raw = prompt(`${label}\n(HH:MM):`, def);
   if (raw === null) return null;
   const h = raw.trim();
@@ -451,7 +467,9 @@ function promptHora(label, fallback) {
     toast("Horário inválido");
     return null;
   }
-  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  const ok = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  lembrarHora(ok);
+  return ok;
 }
 
 function horimetroBaseTurno() {
@@ -602,7 +620,7 @@ async function registerEvent(codigo, extra = {}) {
   let hora = extra.hora;
   let horimetro = extra.horimetro;
   if (evDef?.exige_hora && !hora) {
-    hora = prompt("Horário (HH:MM):", nowTime());
+    hora = promptHora(`Horário — ${evDef?.nome || codigo}`, horaPadrao());
     if (!hora) return;
   }
   if (evDef?.exige_horimetro && horimetro == null) {
@@ -625,6 +643,7 @@ async function registerEvent(codigo, extra = {}) {
     origem: "PWA",
   };
   await pushEvent(row);
+  if (hora) lembrarHora(hora);
   turn.last_hr = horimetro ?? turn.last_hr;
   await Storage.saveActiveTurn(turn);
   await refreshTimeline();
@@ -664,9 +683,9 @@ function openModalDeslocRetorno() {
   fillSelect($("retOrigemLoc"), catalog.locais, "id", (l) => l.nome);
   fillSelect($("retDestinoLoc"), catalog.locais, "id", (l) => l.nome);
   if (turn.retiro_id) $("retOrigemLoc").value = String(turn.retiro_id);
-  $("retHoraSaida").value = nowTime();
+  $("retHoraSaida").value = horaPadrao();
   $("retHrSaida").value = String(turn.last_hr ?? "");
-  $("retHoraChegada").value = nowTime();
+  $("retHoraChegada").value = horaPadrao();
   $("retHrChegada").value = String(turn.last_hr ?? "");
   $("modalProximoTalhao").classList.add("hidden");
   $("modalInsumos").classList.add("hidden");
@@ -678,7 +697,7 @@ function openModalProximoTalhao() {
   fillSelect($("nextRetiro"), catalog.locais, "id", (l) => l.nome);
   if (turn.retiro_id) $("nextRetiro").value = String(turn.retiro_id);
   $("nextTalhaoCod").value = "";
-  $("nextHoraOp").value = nowTime();
+  $("nextHoraOp").value = horaPadrao();
   const hrDefault = turn.last_hr ?? turn.horimetro_inicio_turno ?? "";
   $("nextHrOp").value = hrDefault !== "" ? String(hrDefault) : "";
   $("modalInsumos").classList.add("hidden");
@@ -790,9 +809,27 @@ async function startNextTalhaoFromForm() {
     return;
   }
   closeModal();
+  lembrarHora(hora);
+
+  if (turn.id_ciclo && (await canSyncNow())) {
+    try {
+      await sbPatch(
+        "campo_ciclo_operacao",
+        `id_turno=eq.${turn.id}&status=eq.ATIVO`,
+        {
+          status: "FINALIZADO",
+          hora_fim: turn.last_hora || hora,
+          horimetro_fim: turn.last_hr ?? hr,
+          fechado_em: new Date().toISOString(),
+        }
+      );
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+    }
+  }
 
   await registerEvent("PARADA_MUDANCA_TALHAO", {
-    hora: nowTime(),
+    hora,
     talhao_codigo: String(talhao).trim(),
     retiro_id: retiroId,
   });
@@ -904,7 +941,7 @@ async function onEventClick(codigo) {
       toast("Use «Próximo talhão» ou retorno à sede / fim turno.");
       return;
     }
-    const horaFim = promptHora("Horário fim operação", nowTime());
+    const horaFim = promptHora("Horário fim operação", horaPadrao());
     if (!horaFim) return;
     if (
       !confirmarHoraRelogio(horaFim, [turn.hora_inicio_turno, $("horaTurno")?.value], "Fim operação")
@@ -917,9 +954,12 @@ async function onEventClick(codigo) {
     if (!Number.isFinite(hr)) return;
     if (!validarHorimetro(hr, "Fim operação")) return;
     await registerEvent("FIM_OPERACAO", { hora: horaFim, horimetro: hr });
-    if (turn.id_ciclo && (await canSyncNow())) {
+    if (await canSyncNow()) {
       try {
-        await sbPatch("campo_ciclo_operacao", `id=eq.${turn.id_ciclo}`, {
+        const q = turn.id_ciclo
+          ? `id=eq.${turn.id_ciclo}`
+          : `id_turno=eq.${turn.id}&status=eq.ATIVO`;
+        await sbPatch("campo_ciclo_operacao", q, {
           status: "FINALIZADO",
           hora_fim: horaFim,
           horimetro_fim: hr,
@@ -933,6 +973,7 @@ async function onEventClick(codigo) {
     turn.insumo_lancado_talhao = false;
     turn.id_ciclo_fechado = turn.id_ciclo;
     turn.last_hr = hr;
+    lembrarHora(horaFim);
     if (operacaoExigeInsumo()) {
       turn.fase_pos_fim = true;
       turn.insumos_talhao_concluido = false;
@@ -1003,7 +1044,7 @@ async function onEventClick(codigo) {
         return;
       }
     }
-    const horaFim = promptHora("Horário fim turno (na sede)", nowTime());
+    const horaFim = promptHora("Horário fim turno (na sede)", horaPadrao());
     if (!horaFim) return;
     const hr = parseFloat(
       prompt("Horímetro fim turno (na sede):", String(turn.last_hr ?? ""))
@@ -1401,6 +1442,8 @@ async function boot() {
       toast("Selecione insumo e quantidade");
       return;
     }
+    const horaIns = promptHora("Horário do insumo (do apontamento)", horaPadrao());
+    if (!horaIns) return;
     closeModal();
     const cicloId = insumoCicloId();
     if (navigator.onLine && turn.id) {
@@ -1416,7 +1459,7 @@ async function boot() {
         unidade: ins.unidade || "UN",
       });
     }
-    await registerEvent("LANCAMENTO_INSUMOS", { hora: nowTime() });
+    await registerEvent("LANCAMENTO_INSUMOS", { hora: horaIns });
     turn.insumo_lancado_talhao = true;
     await concluirEtapaInsumosTalhao();
     toast(
@@ -1455,13 +1498,13 @@ async function boot() {
 
   $("btnStep2Next").addEventListener("click", () => {
     setWizardStep(3);
-    $("horaChegada").value = nowTime();
+    $("horaChegada").value = horaPadrao();
   });
 
   $("btnStep3Next").addEventListener("click", () => {
     setWizardStep(4);
     $("hrOp").value = $("hrChegada").value || $("hrSaida").value;
-    $("horaOp").value = nowTime();
+    $("horaOp").value = $("horaChegada").value || horaPadrao();
   });
 
   $("btnIniciarJornada").addEventListener("click", () => finishDeslocAndCiclo());
