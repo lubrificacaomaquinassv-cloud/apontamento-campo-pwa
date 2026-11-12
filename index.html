@@ -9,7 +9,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icons/logo-placa-sv.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="css/app.css?v=23" />
+  <link rel="stylesheet" href="css/app.css?v=25" />
 </head>
 <body>
   <div class="app">
@@ -108,14 +108,14 @@
     <section id="screenJourney" class="hidden">
       <div class="journey-head" id="journeyHead"></div>
       <div class="sec">Operação em andamento</div>
-      <p class="field-hint">Talhão · Horímetro · Insumos conforme operação</p>
+      <p class="field-hint">1 Finalizar talhão · 2 Insumos · 3 Próximo talhão · Fim operação encerra o serviço no campo</p>
       <div class="timeline" id="timeline"></div>
       <div id="eventButtons"></div>
       <div id="posCicloActions" class="hidden">
         <p class="field-hint" id="posCicloHint">—</p>
-        <button type="button" class="btn-primary highlight" id="btnInsumosPosFim">2 · Lançar insumos</button>
-        <button type="button" class="btn-secondary" id="btnSemInsumoTalhao">Concluir talhão — próximo</button>
-        <button type="button" class="btn-primary hidden" id="btnProximoTalhao">3 · Próximo talhão</button>
+        <button type="button" class="btn-primary highlight" id="btnInsumosPosFim">Lançar insumos</button>
+        <button type="button" class="btn-secondary" id="btnSemInsumoTalhao">Sem insumo neste talhão</button>
+        <button type="button" class="btn-primary hidden" id="btnProximoTalhao">Próximo talhão</button>
       </div>
       <button type="button" class="btn-secondary" id="btnVoltarInicio">Voltar ao início</button>
       <button type="button" class="btn-secondary" id="btnSync">Sincronizar / atualizar</button>
@@ -159,13 +159,13 @@
   <div class="toast hidden" id="toast"></div>
 
   <script src="config.js"></script>
-  <script src="js/storage.js?v=23"></script>
-  <script src="js/api.js?v=23"></script>
-  <script src="js/app.js?v=23"></script>
+  <script src="js/storage.js?v=25"></script>
+  <script src="js/api.js?v=25"></script>
+  <script src="js/app.js?v=25"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker
-        .register("./sw.js?v=23")
+        .register("./sw.js?v=25")
         .then((reg) => reg.update())
         .catch(console.warn);
     }
