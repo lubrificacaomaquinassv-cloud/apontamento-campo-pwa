@@ -9,7 +9,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icons/logo-placa-sv.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
-  <link rel="stylesheet" href="css/app.css?v=22" />
+  <link rel="stylesheet" href="css/app.css?v=23" />
 </head>
 <body>
   <div class="app">
@@ -159,13 +159,13 @@
   <div class="toast hidden" id="toast"></div>
 
   <script src="config.js"></script>
-  <script src="js/storage.js?v=22"></script>
-  <script src="js/api.js?v=22"></script>
-  <script src="js/app.js?v=22"></script>
+  <script src="js/storage.js?v=23"></script>
+  <script src="js/api.js?v=23"></script>
+  <script src="js/app.js?v=23"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker
-        .register("./sw.js?v=22")
+        .register("./sw.js?v=23")
         .then((reg) => reg.update())
         .catch(console.warn);
     }
