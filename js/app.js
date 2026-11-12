@@ -5,13 +5,14 @@ let turn = null; // { id, client_turn_id, seq, id_ciclo, ... }
 const JOURNEY_BUTTONS = [
   { codigo: "PARADA_ALMOCO", label: "Parada almoço", hint: "Somente horário" },
   { codigo: "RETORNO_ALMOCO", label: "Retorno almoço", hint: "Horário do retorno" },
-  { codigo: "PARADA_CLIMA", label: "Parada clima", hint: "Se não retornar → fim operação" },
+  { codigo: "PARADA_CLIMA", label: "Parada clima", hint: "Se não retornar → finalizar talhão" },
   { codigo: "PARADA_MECANICA", label: "Parada mecânica", hint: "Horário e HR se houver" },
   { codigo: "RETORNO_OPERACAO", label: "Retorno operação", hint: "Após parada" },
-  { codigo: "FIM_OPERACAO", label: "Fim operação", hint: "1 · Finaliza o talhão (HR)" },
-  { codigo: "LANCAMENTO_INSUMOS", label: "Insumos", hint: "2 · Após fim operação", highlight: true },
-  { codigo: "DESLOC_FRENTE_SEDE", label: "Desloc. retorno sede", hint: "Antes do fim do turno" },
-  { codigo: "FINAL_TURNO", label: "Fim turno", hint: "Somente na sede" },
+  { codigo: "FINALIZAR_TALHAO", label: "Finalizar talhão", hint: "Hora e horímetro deste talhão" },
+  { codigo: "LANCAMENTO_INSUMOS", label: "Lançar insumos", hint: "Após finalizar o talhão", highlight: true },
+  { codigo: "FIM_OPERACAO", label: "Fim operação", hint: "Acabou o serviço no campo" },
+  { codigo: "DESLOC_FRENTE_SEDE", label: "Desloc. retorno sede", hint: "Depois do fim da operação" },
+  { codigo: "FINAL_TURNO", label: "Fim turno", hint: "Depois do fim da operação" },
 ];
 
 function turnoExigeDeslocRetorno() {
@@ -22,28 +23,31 @@ function etapaInsumosPendente() {
   return !!turn?.fase_pos_fim && operacaoExigeInsumo();
 }
 
-function podeEncerrarTurno() {
+function talhaoProntoParaSeguir() {
   if (!turn || turn.ciclo_ativo !== false) return false;
   if (etapaInsumosPendente()) return false;
   if (operacaoExigeInsumo() && !turn.insumos_talhao_concluido && !turn.insumo_lancado_talhao) {
     return false;
   }
+  return true;
+}
+
+function podeEncerrarTurno() {
+  if (!talhaoProntoParaSeguir()) return false;
+  if (!turn.operacao_encerrada) return false;
   if (turnoExigeDeslocRetorno() && !turn.desloc_retorno_concluido) return false;
   return true;
 }
 
-/** Após lançar insumo, libera próximo talhão / fim turno. */
+/** Após lançar insumo, libera próximo talhão / fim operação. */
 async function concluirEtapaInsumosTalhao() {
   if (!turn?.fase_pos_fim && !turn?.insumo_lancado_talhao) return;
   turn.fase_pos_fim = false;
   turn.insumos_talhao_concluido = true;
-  semInsumoConfirmPending = false;
   await Storage.saveActiveTurn(turn);
   refreshPosCicloUI();
   renderEventButtons();
 }
-
-let semInsumoConfirmPending = false;
 
 function operacaoExigeInsumo() {
   if (turn?.exige_insumo != null) return !!turn.exige_insumo;
@@ -57,30 +61,23 @@ function insumoCicloId() {
 
 async function concluirInsumosTalhao() {
   if (!turn?.fase_pos_fim) {
-    if (turn?.insumos_talhao_concluido && turn.ciclo_ativo === false) {
+    if (turn?.insumos_talhao_concluido && turn.ciclo_ativo === false && !turn.operacao_encerrada) {
       startNextTalhao();
       return;
     }
     toast("Nada pendente neste talhão.");
     return;
   }
-  if (operacaoExigeInsumo() && !turn.insumo_lancado_talhao) {
-    if (!semInsumoConfirmPending) {
-      semInsumoConfirmPending = true;
-      $("btnSemInsumoTalhao").textContent = "Confirmar sem insumo";
-      toast("Toque de novo em «Confirmar sem insumo» se não houve aplicação.", 6000);
-      return;
-    }
-  }
+  turn.insumo_lancado_talhao = turn.insumo_lancado_talhao || false;
   await concluirEtapaInsumosTalhao();
-  toast("Talhão concluído — use «Próximo talhão» ou «Fim turno».");
+  toast("Talhão concluído — use «Próximo talhão» ou «Fim operação».");
 }
 
 function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v23";
+const APP_VERSION = "v25";
 
 function foldTxt(s) {
   return String(s || "")
@@ -239,6 +236,7 @@ async function createOfflineTurn(payload, op, modo) {
     desloc_retorno_registrado: false,
     ciclo_ativo: false,
     fase_pos_fim: false,
+    operacao_encerrada: false,
     pendingEvents: [
       {
         client_event_id: crypto.randomUUID(),
@@ -487,6 +485,76 @@ function normHora(t) {
   return s;
 }
 
+const EVENTOS_SEM_DUPLICAR_HORA = new Set([
+  "PARADA_ALMOCO",
+  "RETORNO_ALMOCO",
+  "PARADA_CLIMA",
+  "PARADA_MECANICA",
+  "RETORNO_OPERACAO",
+  "PARADA_MUDANCA_TALHAO",
+  "FINALIZAR_TALHAO",
+  "FIM_OPERACAO",
+]);
+
+async function eventoJaLancado(codigo, hora) {
+  const h = normHora(hora);
+  if (!codigo || !h) return false;
+  const same = (e) => e.codigo_evento === codigo && normHora(e.hora) === h;
+  if ((turn?.pendingEvents || []).some(same)) return true;
+  if (turn?.id && (await canSyncNow())) {
+    try {
+      const rows = await sbGet(
+        "fato_evento_campo",
+        `id_turno=eq.${turn.id}&codigo_evento=eq.${codigo}&select=hora`
+      );
+      if ((rows || []).some((r) => normHora(r.hora) === h)) return true;
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+    }
+  }
+  return false;
+}
+
+/** Recupera talhão / ciclo quando o operador retoma o turno pelo «Novo turno». */
+async function hydrateTurnCiclo(t) {
+  if (!t?.id || !(await canSyncNow())) return t;
+  try {
+    const ciclos = await sbGet(
+      "campo_ciclo_operacao",
+      `id_turno=eq.${t.id}&select=id,seq,status,talhao_codigo,retiro_id,hora_inicio,hora_fim,horimetro_ini,horimetro_fim&order=seq.desc`
+    );
+    const ativo = (ciclos || []).find((c) => c.status === "ATIVO");
+    const last = ativo || (ciclos || [])[0];
+    if (!last) return t;
+    t.id_ciclo = last.id;
+    t.talhao_codigo = last.talhao_codigo || t.talhao_codigo;
+    t.retiro_id = last.retiro_id || t.retiro_id;
+    t.ciclo_ativo = last.status === "ATIVO";
+    if (last.status === "ATIVO") {
+      t.fase_pos_fim = false;
+      t.last_hr = last.horimetro_ini ?? t.last_hr;
+      t.last_hora = normHora(last.hora_inicio) || t.last_hora;
+    } else {
+      t.last_hr = last.horimetro_fim ?? last.horimetro_ini ?? t.last_hr;
+      t.last_hora = normHora(last.hora_fim) || normHora(last.hora_inicio) || t.last_hora;
+    }
+    const evs = await sbGet(
+      "fato_evento_campo",
+      `id_turno=eq.${t.id}&select=seq,codigo_evento&order=seq`
+    );
+    const lastFinalizar = [...(evs || [])].reverse().find((e) => e.codigo_evento === "FINALIZAR_TALHAO");
+    const lastFimOp = [...(evs || [])].reverse().find((e) => e.codigo_evento === "FIM_OPERACAO");
+    if (lastFinalizar && lastFimOp && lastFimOp.seq > lastFinalizar.seq) {
+      t.operacao_encerrada = true;
+    } else if (t.operacao_encerrada == null) {
+      t.operacao_encerrada = false;
+    }
+  } catch (e) {
+    console.warn("hydrate ciclo", e);
+  }
+  return t;
+}
+
 /** Avisa se horário de relógio igual ao início (permitido se o operador confirmar). */
 function confirmarHoraRelogio(horaFim, referencias, label) {
   const hf = normHora(horaFim);
@@ -615,39 +683,53 @@ async function pushEvent(row) {
   return inserted?.[0];
 }
 
+let _regLock = false;
+
 async function registerEvent(codigo, extra = {}) {
-  const evDef = catalog.eventos.find((e) => e.codigo === codigo);
-  let hora = extra.hora;
-  let horimetro = extra.horimetro;
-  if (evDef?.exige_hora && !hora) {
-    hora = promptHora(`Horário — ${evDef?.nome || codigo}`, horaPadrao());
-    if (!hora) return;
+  if (_regLock) return;
+  _regLock = true;
+  try {
+    const evDef = catalog.eventos.find((e) => e.codigo === codigo);
+    let hora = extra.hora;
+    let horimetro = extra.horimetro;
+    if (evDef?.exige_hora && !hora) {
+      hora = promptHora(`Horário — ${evDef?.nome || codigo}`, horaPadrao());
+      if (!hora) return;
+    }
+    if (hora) hora = normHora(hora);
+    if (evDef?.exige_horimetro && horimetro == null) {
+      const v = prompt("Horímetro:");
+      if (v === null || v === "") return;
+      horimetro = parseFloat(v);
+    }
+    if (EVENTOS_SEM_DUPLICAR_HORA.has(codigo) && hora && (await eventoJaLancado(codigo, hora))) {
+      toast(`${evDef?.nome || codigo} já lançado neste horário — não duplica`);
+      await refreshTimeline();
+      return;
+    }
+    const seq = await nextSeq();
+    const row = {
+      client_event_id: crypto.randomUUID(),
+      id_turno: turn.id,
+      id_ciclo: extra.id_ciclo || turn.id_ciclo,
+      seq,
+      codigo_evento: codigo,
+      hora: hora || null,
+      horimetro: horimetro ?? null,
+      talhao_codigo: extra.talhao_codigo || turn.talhao_codigo || null,
+      retiro_id: extra.retiro_id || turn.retiro_id || null,
+      observacao: extra.observacao || null,
+      origem: "PWA",
+    };
+    await pushEvent(row);
+    if (hora) lembrarHora(hora);
+    turn.last_hr = horimetro ?? turn.last_hr;
+    await Storage.saveActiveTurn(turn);
+    await refreshTimeline();
+    toast(`${evDef?.nome || codigo} registrado`);
+  } finally {
+    _regLock = false;
   }
-  if (evDef?.exige_horimetro && horimetro == null) {
-    const v = prompt("Horímetro:");
-    if (v === null || v === "") return;
-    horimetro = parseFloat(v);
-  }
-  const seq = await nextSeq();
-  const row = {
-    client_event_id: crypto.randomUUID(),
-    id_turno: turn.id,
-    id_ciclo: turn.id_ciclo,
-    seq,
-    codigo_evento: codigo,
-    hora: hora || null,
-    horimetro: horimetro ?? null,
-    talhao_codigo: extra.talhao_codigo || turn.talhao_codigo || null,
-    retiro_id: extra.retiro_id || turn.retiro_id || null,
-    observacao: extra.observacao || null,
-    origem: "PWA",
-  };
-  await pushEvent(row);
-  if (hora) lembrarHora(hora);
-  turn.last_hr = horimetro ?? turn.last_hr;
-  await Storage.saveActiveTurn(turn);
-  await refreshTimeline();
-  toast(`${evDef?.nome || codigo} registrado`);
 }
 
 async function refreshTimeline() {
@@ -757,27 +839,33 @@ function refreshPosCicloUI() {
   $("posCicloActions").classList.toggle("hidden", !aberto);
   if (!aberto) return;
   const tal = turn.talhao_codigo || "—";
+  if (turn.operacao_encerrada) {
+    $("posCicloHint").textContent =
+      "Serviço no campo encerrado — retorno à sede (se houver) e Fim turno.";
+    $("btnInsumosPosFim").classList.add("hidden");
+    $("btnSemInsumoTalhao").classList.add("hidden");
+    $("btnProximoTalhao").classList.add("hidden");
+    return;
+  }
   if (turn.fase_pos_fim) {
     const exIn = operacaoExigeInsumo();
     $("posCicloHint").textContent = exIn
-      ? `Talhão ${tal} finalizado — lance insumos ou «Sem insumo».`
-      : `Trecho ${tal} finalizado — confirme para liberar o próximo.`;
+      ? `Talhão ${tal} finalizado — lance os insumos. Depois: Próximo talhão ou Fim operação.`
+      : `Talhão ${tal} finalizado — «Próximo talhão» ou «Fim operação».`;
     $("btnInsumosPosFim").classList.toggle("hidden", !exIn);
-    $("btnSemInsumoTalhao").classList.remove("hidden");
-    $("btnSemInsumoTalhao").textContent = exIn
-      ? "Concluir talhão — próximo"
-      : "Próximo retiro / talhão";
+    $("btnSemInsumoTalhao").classList.toggle("hidden", !exIn);
+    $("btnSemInsumoTalhao").textContent = "Sem insumo neste talhão";
     $("btnProximoTalhao").classList.add("hidden");
   } else if (turn.insumos_talhao_concluido) {
     $("posCicloHint").textContent =
-      `Talhão ${tal} concluído — «Próximo talhão» ou «Fim turno» (se acabou o dia).`;
+      `Talhão ${tal} ok — «Próximo talhão» (hora e HR) ou «Fim operação» se acabou o serviço.`;
     $("btnInsumosPosFim").classList.add("hidden");
     $("btnSemInsumoTalhao").classList.add("hidden");
     $("btnProximoTalhao").classList.remove("hidden");
   } else {
-    $("posCicloHint").textContent = "Encerre o talhão ou conclua a etapa de insumos.";
-    $("btnInsumosPosFim").classList.toggle("hidden", !turn.fase_pos_fim);
-    $("btnSemInsumoTalhao").classList.toggle("hidden", !turn.fase_pos_fim);
+    $("posCicloHint").textContent = "Use «Finalizar talhão» (hora e horímetro).";
+    $("btnInsumosPosFim").classList.add("hidden");
+    $("btnSemInsumoTalhao").classList.add("hidden");
     $("btnProximoTalhao").classList.add("hidden");
   }
 }
@@ -852,6 +940,7 @@ async function startNextTalhaoFromForm() {
   turn.fase_pos_fim = false;
   turn.insumos_talhao_concluido = false;
   turn.insumo_lancado_talhao = false;
+  turn.operacao_encerrada = false;
   turn.id_ciclo_fechado = null;
   await registerEvent("INICIO_OPERACAO", {
     hora,
@@ -869,12 +958,16 @@ async function startNextTalhaoFromForm() {
 }
 
 function startNextTalhao() {
+  if (turn.operacao_encerrada) {
+    toast("Fim operação já lançado — não abre outro talhão.");
+    return;
+  }
   if (turn.fase_pos_fim) {
-    toast("Lance insumos ou «Sem insumo» antes do próximo talhão.");
+    toast("Lance os insumos (ou «Sem insumo neste talhão») antes do próximo.");
     return;
   }
   if (!turn.insumos_talhao_concluido && turn.ciclo_ativo === false) {
-    toast("Conclua insumos do talhão anterior.");
+    toast("Finalize o talhão e os insumos antes do próximo.");
     return;
   }
   openModalProximoTalhao();
@@ -883,35 +976,70 @@ function startNextTalhao() {
 function renderEventButtons() {
   const wrap = $("eventButtons");
   wrap.innerHTML = "";
+  const campoEncerrado = !!turn.operacao_encerrada;
   const precisaDesloc =
-    turnoExigeDeslocRetorno() && turn.ciclo_ativo === false && !turn.desloc_retorno_concluido;
+    turnoExigeDeslocRetorno() && campoEncerrado && !turn.desloc_retorno_concluido;
   const deslocOpcional =
-    !turnoExigeDeslocRetorno() && turn.ciclo_ativo === false && !turn.desloc_retorno_registrado;
+    !turnoExigeDeslocRetorno() && campoEncerrado && !turn.desloc_retorno_registrado;
   for (const b of JOURNEY_BUTTONS) {
     if (b.codigo === "LANCAMENTO_INSUMOS" && !operacaoExigeInsumo()) continue;
     const btn = document.createElement("button");
     btn.type = "button";
     let cls = "btn-event" + (b.highlight ? " highlight" : "");
     if (b.codigo === "DESLOC_FRENTE_SEDE" && (precisaDesloc || deslocOpcional)) cls += " highlight";
+    if (b.codigo === "FIM_OPERACAO" && talhaoProntoParaSeguir() && !campoEncerrado) cls += " highlight";
     btn.className = cls;
     let hint = b.hint;
     if (b.codigo === "DESLOC_FRENTE_SEDE" && !turnoExigeDeslocRetorno()) {
       hint = "Opcional — voltou da frente à tarde";
     }
     btn.innerHTML = `${b.label}<small>${hint}</small>`;
-    if (b.codigo === "LANCAMENTO_INSUMOS" && turn.ciclo_ativo !== false && !turn.fase_pos_fim) {
-      btn.disabled = true;
-      btn.innerHTML = `${b.label}<small>Após «Fim operação»</small>`;
+    if (b.codigo === "FINALIZAR_TALHAO") {
+      if (turn.ciclo_ativo === false || campoEncerrado) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>${campoEncerrado ? "Serviço já encerrado" : "Talhão já finalizado"}</small>`;
+      }
     }
-    if (b.codigo === "FIM_OPERACAO" && turn.ciclo_ativo === false) {
-      btn.disabled = true;
+    if (b.codigo === "LANCAMENTO_INSUMOS") {
+      if (campoEncerrado) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Serviço já encerrado</small>`;
+      } else if (turn.ciclo_ativo !== false && !turn.fase_pos_fim) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Após «Finalizar talhão»</small>`;
+      }
+    }
+    if (b.codigo === "FIM_OPERACAO") {
+      if (campoEncerrado) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Já lançado</small>`;
+      } else if (turn.ciclo_ativo !== false) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Finalize o talhão e os insumos primeiro</small>`;
+      } else if (etapaInsumosPendente()) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Lance os insumos do talhão primeiro</small>`;
+      }
+    }
+    if (b.codigo === "DESLOC_FRENTE_SEDE") {
+      if (turn.ciclo_ativo !== false || etapaInsumosPendente()) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Finalize o talhão / insumos primeiro</small>`;
+      } else if (!campoEncerrado) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Use «Fim operação» antes do retorno</small>`;
+      } else if (turn.desloc_retorno_registrado) {
+        btn.disabled = true;
+      }
     }
     if (b.codigo === "FINAL_TURNO" && !podeEncerrarTurno()) {
       btn.disabled = true;
       if (turn.ciclo_ativo !== false) {
-        btn.innerHTML = `${b.label}<small>Feche o talhão antes (Fim operação)</small>`;
+        btn.innerHTML = `${b.label}<small>Finalize o talhão primeiro</small>`;
       } else if (etapaInsumosPendente()) {
-        btn.innerHTML = `${b.label}<small>Lance insumos ou «Concluir talhão»</small>`;
+        btn.innerHTML = `${b.label}<small>Lance os insumos do talhão</small>`;
+      } else if (!campoEncerrado) {
+        btn.innerHTML = `${b.label}<small>Use «Fim operação» para encerrar o serviço</small>`;
       } else if (turnoExigeDeslocRetorno() && !turn.desloc_retorno_concluido) {
         btn.innerHTML = `${b.label}<small>Retorno sede ou toque 2x p/ fim no campo</small>`;
         btn.disabled = false;
@@ -923,10 +1051,53 @@ function renderEventButtons() {
   }
 }
 
+async function fecharCicloAtual(horaFim, hr) {
+  if (await canSyncNow()) {
+    try {
+      const q = turn.id_ciclo
+        ? `id=eq.${turn.id_ciclo}`
+        : `id_turno=eq.${turn.id}&status=eq.ATIVO`;
+      await sbPatch("campo_ciclo_operacao", q, {
+        status: "FINALIZADO",
+        hora_fim: horaFim,
+        horimetro_fim: hr,
+        fechado_em: new Date().toISOString(),
+      });
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+    }
+  }
+  turn.ciclo_ativo = false;
+  turn.insumo_lancado_talhao = false;
+  turn.id_ciclo_fechado = turn.id_ciclo;
+  turn.last_hr = hr;
+  lembrarHora(horaFim);
+}
+
+async function aposFecharTalhao() {
+  if (operacaoExigeInsumo()) {
+    turn.fase_pos_fim = true;
+    turn.insumos_talhao_concluido = false;
+    await Storage.saveActiveTurn(turn);
+    refreshPosCicloUI();
+    refreshHomeButtons();
+    renderEventButtons();
+    toast(`Talhão ${turn.talhao_codigo || "—"}: lance os insumos`);
+  } else {
+    turn.fase_pos_fim = false;
+    turn.insumos_talhao_concluido = true;
+    await Storage.saveActiveTurn(turn);
+    refreshPosCicloUI();
+    refreshHomeButtons();
+    renderEventButtons();
+    toast("Talhão finalizado — «Próximo talhão» ou «Fim operação»");
+  }
+}
+
 async function onEventClick(codigo) {
   if (codigo === "LANCAMENTO_INSUMOS") {
     if (turn.ciclo_ativo !== false && !turn.fase_pos_fim) {
-      toast("Ordem: 1 Fim operação → 2 Insumos → 3 Próximo talhão");
+      toast("Ordem: 1 Finalizar talhão → 2 Insumos → 3 Próximo talhão");
       return;
     }
     if (!catalog.insumos?.length) {
@@ -936,67 +1107,70 @@ async function onEventClick(codigo) {
     openModalInsumos();
     return;
   }
-  if (codigo === "FIM_OPERACAO") {
+  if (codigo === "FINALIZAR_TALHAO") {
     if (turn.ciclo_ativo === false) {
-      toast("Use «Próximo talhão» ou retorno à sede / fim turno.");
+      toast("Talhão já finalizado — lance insumos, «Próximo talhão» ou «Fim operação».");
       return;
     }
-    const horaFim = promptHora("Horário fim operação", horaPadrao());
+    const horaFim = promptHora("Horário fim deste talhão", horaPadrao());
     if (!horaFim) return;
     if (
-      !confirmarHoraRelogio(horaFim, [turn.hora_inicio_turno, $("horaTurno")?.value], "Fim operação")
+      !confirmarHoraRelogio(horaFim, [turn.hora_inicio_turno, $("horaTurno")?.value], "Finalizar talhão")
     ) {
       return;
     }
     const hr = parseFloat(
-      prompt("Horímetro fim operação:", String(turn.last_hr ?? ""))
+      prompt("Horímetro fim deste talhão:", String(turn.last_hr ?? ""))
+    );
+    if (!Number.isFinite(hr)) return;
+    if (!validarHorimetro(hr, "Finalizar talhão")) return;
+    await registerEvent("FINALIZAR_TALHAO", { hora: horaFim, horimetro: hr });
+    await fecharCicloAtual(horaFim, hr);
+    await aposFecharTalhao();
+    return;
+  }
+  if (codigo === "FIM_OPERACAO") {
+    if (turn.operacao_encerrada) {
+      toast("Fim operação já lançado — use retorno à sede ou Fim turno.");
+      return;
+    }
+    if (turn.ciclo_ativo !== false) {
+      toast("Use «Finalizar talhão» (hora e HR) antes do fim da operação.");
+      return;
+    }
+    if (etapaInsumosPendente()) {
+      toast("Lance os insumos do talhão (ou «Sem insumo neste talhão») antes do fim da operação.");
+      return;
+    }
+    const horaFim = promptHora("Horário fim da operação no campo", horaPadrao());
+    if (!horaFim) return;
+    const hr = parseFloat(
+      prompt("Horímetro fim da operação:", String(turn.last_hr ?? ""))
     );
     if (!Number.isFinite(hr)) return;
     if (!validarHorimetro(hr, "Fim operação")) return;
     await registerEvent("FIM_OPERACAO", { hora: horaFim, horimetro: hr });
-    if (await canSyncNow()) {
-      try {
-        const q = turn.id_ciclo
-          ? `id=eq.${turn.id_ciclo}`
-          : `id_turno=eq.${turn.id}&status=eq.ATIVO`;
-        await sbPatch("campo_ciclo_operacao", q, {
-          status: "FINALIZADO",
-          hora_fim: horaFim,
-          horimetro_fim: hr,
-          fechado_em: new Date().toISOString(),
-        });
-      } catch (e) {
-        if (!isNetworkError(e)) throw e;
-      }
-    }
-    turn.ciclo_ativo = false;
-    turn.insumo_lancado_talhao = false;
-    turn.id_ciclo_fechado = turn.id_ciclo;
-    turn.last_hr = hr;
-    lembrarHora(horaFim);
-    if (operacaoExigeInsumo()) {
-      turn.fase_pos_fim = true;
-      turn.insumos_talhao_concluido = false;
-      semInsumoConfirmPending = false;
-      await Storage.saveActiveTurn(turn);
-      refreshPosCicloUI();
-      refreshHomeButtons();
-      renderEventButtons();
-      toast(`Talhão ${turn.talhao_codigo || "—"}: lance insumos (passo 2)`);
-    } else {
-      turn.fase_pos_fim = false;
-      turn.insumos_talhao_concluido = true;
-      await Storage.saveActiveTurn(turn);
-      refreshPosCicloUI();
-      refreshHomeButtons();
-      renderEventButtons();
-      toast("Sem insumo nesta operação — use «Próximo talhão» ou Fim turno");
-    }
+    turn.operacao_encerrada = true;
+    turn.fase_pos_fim = false;
+    turn.insumos_talhao_concluido = true;
+    await Storage.saveActiveTurn(turn);
+    refreshPosCicloUI();
+    refreshHomeButtons();
+    renderEventButtons();
+    toast("Serviço no campo encerrado. Retorno à sede (se houver) e Fim turno.");
     return;
   }
   if (codigo === "DESLOC_FRENTE_SEDE") {
     if (turn.ciclo_ativo !== false) {
-      toast("Encerre o talhão (Fim operação) antes do retorno à sede.");
+      toast("Finalize o talhão antes do retorno à sede.");
+      return;
+    }
+    if (etapaInsumosPendente()) {
+      toast("Lance os insumos do talhão antes do retorno à sede.");
+      return;
+    }
+    if (!turn.operacao_encerrada) {
+      toast("Use «Fim operação» antes do retorno à sede.");
       return;
     }
     if (turn.desloc_retorno_registrado) {
@@ -1013,11 +1187,15 @@ async function onEventClick(codigo) {
       return;
     }
     if (turn.ciclo_ativo !== false) {
-      toast("Use «Fim operação» no talhão antes de encerrar o turno.");
+      toast("Use «Finalizar talhão» antes de encerrar o turno.");
       return;
     }
     if (etapaInsumosPendente()) {
-      toast("Lance insumos ou toque «Concluir talhão — próximo» antes do fim do turno.");
+      toast("Lance os insumos do talhão antes do fim do turno.");
+      return;
+    }
+    if (!turn.operacao_encerrada) {
+      toast("Use «Fim operação» para encerrar o serviço no campo, depois Fim turno.");
       return;
     }
     if (operacaoExigeInsumo() && !turn.insumos_talhao_concluido && turn.insumo_lancado_talhao) {
@@ -1167,16 +1345,22 @@ async function startWizardFlow() {
   try {
     let existing = await findOpenTurn(payload.data, payload.id_frota, payload.operador);
     if (existing) {
+      const saved = await Storage.getActiveTurn();
       turn = {
         ...existing,
+        ...(saved?.id === existing.id ? saved : {}),
+        id: existing.id,
+        status: existing.status,
+        estado_jornada: existing.estado_jornada,
         modo_deslocamento: modo,
         exige_insumo: op.exige_insumo,
         operacao_nome: op.nome,
         id_operacao_campo: op.id,
-        desloc_retorno_concluido: existing.desloc_retorno_concluido ?? false,
-        desloc_retorno_registrado: existing.desloc_retorno_registrado ?? false,
+        desloc_retorno_concluido: existing.desloc_retorno_concluido ?? saved?.desloc_retorno_concluido ?? false,
+        desloc_retorno_registrado: existing.desloc_retorno_registrado ?? saved?.desloc_retorno_registrado ?? false,
       };
       turn.seq = await loadTurnMaxSeq();
+      await hydrateTurnCiclo(turn);
       resumed = true;
       toast("Continuando turno aberto de hoje");
       if (existing.estado_jornada === "OPERACAO_ATIVA") {
@@ -1196,6 +1380,7 @@ async function startWizardFlow() {
           desloc_retorno_registrado: false,
           ciclo_ativo: false,
           fase_pos_fim: false,
+          operacao_encerrada: false,
         };
       } catch (postErr) {
         const msg = String(postErr.message || postErr);
@@ -1213,8 +1398,16 @@ async function startWizardFlow() {
             }
             throw postErr;
           }
-          turn = { ...existing, modo_deslocamento: modo, exige_insumo: op.exige_insumo };
+          const savedDup = await Storage.getActiveTurn();
+          turn = {
+            ...existing,
+            ...(savedDup?.id === existing.id ? savedDup : {}),
+            id: existing.id,
+            modo_deslocamento: modo,
+            exige_insumo: op.exige_insumo,
+          };
           turn.seq = await loadTurnMaxSeq();
+          await hydrateTurnCiclo(turn);
           resumed = true;
           toast("Turno já existia — continuando");
         } else {
@@ -1245,7 +1438,7 @@ async function startWizardFlow() {
     }
     let msg = e.message || "Erro ao abrir turno — tente de novo";
     if (msg.includes("PGRST204") || msg.includes("Could not find")) {
-      msg = "Erro de versão do app — publique a v16 ou atualize a página.";
+      msg = "Erro de versão do app — atualize a página (Catálogo OK · v25).";
     } else if (msg.length > 140) {
       msg = msg.slice(0, 140);
     }
@@ -1302,6 +1495,7 @@ async function finishDeslocAndCiclo() {
     turn.fase_pos_fim = false;
     turn.insumos_talhao_concluido = false;
     turn.insumo_lancado_talhao = false;
+    turn.operacao_encerrada = false;
     await registerEvent("INICIO_OPERACAO", {
       hora: $("horaOp").value,
       horimetro: turn.last_hr,
@@ -1315,6 +1509,7 @@ async function finishDeslocAndCiclo() {
     turn.fase_pos_fim = false;
     turn.insumos_talhao_concluido = false;
     turn.insumo_lancado_talhao = false;
+    turn.operacao_encerrada = false;
     turn.estado_jornada = "OPERACAO_ATIVA";
     if (!turn.seq) turn.seq = 0;
     await registerEvent("INICIO_OPERACAO", {
@@ -1398,6 +1593,8 @@ async function boot() {
     if (turn.ciclo_ativo === undefined && !turn.id_ciclo) turn.ciclo_ativo = false;
     if (turn.desloc_retorno_concluido === undefined) turn.desloc_retorno_concluido = false;
     if (turn.desloc_retorno_registrado === undefined) turn.desloc_retorno_registrado = false;
+    await hydrateTurnCiclo(turn);
+    await Storage.saveActiveTurn(turn);
   }
   refreshHomeButtons();
   try {
@@ -1419,12 +1616,13 @@ async function boot() {
     showScreen("screenWizard");
   });
 
-  $("btnContinuar").addEventListener("click", () => {
+  $("btnContinuar").addEventListener("click", async () => {
     if (!turn || turn.status === "ENCERRADO") {
       toast("Nenhum turno aberto. Use «Novo turno».");
       refreshHomeButtons();
       return;
     }
+    await hydrateTurnCiclo(turn);
     showJourney();
   });
 
@@ -1447,23 +1645,25 @@ async function boot() {
     closeModal();
     const cicloId = insumoCicloId();
     if (navigator.onLine && turn.id) {
-      await sbPost("campo_aplicacao_insumo", {
-        client_insumo_id: crypto.randomUUID(),
-        id_turno: turn.id,
-        id_ciclo: cicloId,
-        id_insumo_campo: ins.id,
-        produto_texto: null,
-        talhao_codigo: turn.talhao_codigo,
-        retiro_id: turn.retiro_id,
-        quantidade: qtd,
-        unidade: ins.unidade || "UN",
-      });
+      try {
+        await sbPost("campo_aplicacao_insumo", {
+          client_insumo_id: crypto.randomUUID(),
+          id_turno: turn.id,
+          id_ciclo: cicloId,
+          id_insumo_campo: ins.id,
+          talhao_codigo: turn.talhao_codigo,
+          quantidade: qtd,
+          unidade: ins.unidade || "UN",
+        });
+      } catch (e) {
+        if (!isNetworkError(e)) throw e;
+      }
     }
     await registerEvent("LANCAMENTO_INSUMOS", { hora: horaIns });
     turn.insumo_lancado_talhao = true;
     await concluirEtapaInsumosTalhao();
     toast(
-      `${ins.descricao} ${qtd} ${ins.unidade || "UN"}. Pode usar «Próximo talhão» ou «Fim turno».`
+      `${ins.descricao} ${qtd} ${ins.unidade || "UN"}. Use «Próximo talhão» ou «Fim operação».`
     );
   });
   $("btnCancelInsumo").addEventListener("click", () => closeModal());
