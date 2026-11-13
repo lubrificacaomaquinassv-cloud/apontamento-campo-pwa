@@ -6,6 +6,11 @@ const JOURNEY_BUTTONS = [
   { codigo: "PARADA_ALMOCO", label: "Parada almoço", hint: "Somente horário" },
   { codigo: "RETORNO_ALMOCO", label: "Retorno almoço", hint: "Horário do retorno" },
   { codigo: "PARADA_CLIMA", label: "Parada clima", hint: "Se não retornar → finalizar talhão" },
+  {
+    codigo: "PARADA_TECNICA",
+    label: "Parada técnica",
+    hint: "Aguardando liberação de área / frente",
+  },
   { codigo: "PARADA_MECANICA", label: "Parada mecânica", hint: "Horário e HR se houver" },
   { codigo: "RETORNO_OPERACAO", label: "Retorno operação", hint: "Após parada" },
   { codigo: "FINALIZAR_TALHAO", label: "Finalizar talhão", hint: "Hora e horímetro deste talhão" },
@@ -142,7 +147,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v27";
+const APP_VERSION = "v28";
 
 function foldTxt(s) {
   return String(s || "")
@@ -358,6 +363,7 @@ async function fecharTurnoNaUI(msg = "Turno encerrado") {
 
 async function processPendingSyncQueue() {
   if (!(await canSyncNow())) return;
+  const keepTurn = (await Storage.getActiveTurn()) || turn;
   const rows = await Storage.listPendingSync();
   for (const row of rows) {
     turn = row.snap;
@@ -370,7 +376,11 @@ async function processPendingSyncQueue() {
       console.warn("Fila sync", e);
     }
   }
-  turn = null;
+  if (keepTurn?.id || keepTurn?.pending) {
+    if (keepTurn.status !== "ENCERRADO") turn = keepTurn;
+  } else if (!turn?.id && !turn?.pending) {
+    turn = null;
+  }
 }
 
 async function patchEncerramentoTurno(horaFim, hr) {
@@ -555,11 +565,22 @@ const EVENTOS_SEM_DUPLICAR_HORA = new Set([
   "PARADA_ALMOCO",
   "RETORNO_ALMOCO",
   "PARADA_CLIMA",
+  "PARADA_TECNICA",
   "PARADA_MECANICA",
   "RETORNO_OPERACAO",
   "PARADA_MUDANCA_TALHAO",
   "FINALIZAR_TALHAO",
   "FIM_OPERACAO",
+]);
+
+/** Catálogo offline desatualizado — ainda exige horário nestes códigos. */
+const EVENTO_EXIGE_HORA_FALLBACK = new Set([
+  "PARADA_ALMOCO",
+  "RETORNO_ALMOCO",
+  "PARADA_CLIMA",
+  "PARADA_TECNICA",
+  "PARADA_MECANICA",
+  "RETORNO_OPERACAO",
 ]);
 
 async function eventoJaLancado(codigo, hora) {
@@ -663,6 +684,137 @@ function showScreen(name) {
   });
 }
 
+async function eventosDoTurno(t) {
+  if (t?.id && (await canSyncNow())) {
+    try {
+      const rows = await sbGet(
+        "fato_evento_campo",
+        `id_turno=eq.${t.id}&select=seq,codigo_evento&order=seq`
+      );
+      if (rows?.length) return rows;
+    } catch (e) {
+      if (!isNetworkError(e)) throw e;
+    }
+  }
+  return (t?.pendingEvents || []).map((e) => ({
+    seq: e.seq,
+    codigo_evento: e.codigo_evento,
+  }));
+}
+
+function turnoTemInicioOperacao(evs) {
+  return (evs || []).some((e) => e.codigo_evento === "INICIO_OPERACAO");
+}
+
+function preencherWizardComTurno(t) {
+  if (t.data) $("dataOp").value = t.data;
+  if (t.hora_inicio_turno) $("horaTurno").value = normHora(t.hora_inicio_turno);
+  if (t.horimetro_inicio_turno != null) $("hrTurno").value = String(t.horimetro_inicio_turno);
+  if (t.id_frota) {
+    $("frotaValor").value = t.id_frota;
+    $("frotaPick").value = t.id_frota;
+  }
+  if (t.operador) {
+    $("operadorValor").value = t.operador;
+    $("operadorPick").value = t.operador;
+  }
+  if (t.id_operacao_campo && catalog?.operacoes) {
+    $("operacao").value = String(t.id_operacao_campo);
+    onOperacaoChange();
+  }
+  const modo = t.modo_deslocamento;
+  if (modo === "NAO_APLICA" || modo === "SEM" || modo === "NUNCA") $("modoDesloc").value = "SEM";
+  else $("modoDesloc").value = "COM";
+  if (t.talhao_codigo) $("talhaoCod").value = t.talhao_codigo;
+  if (t.retiro_id) $("retiro").value = String(t.retiro_id);
+}
+
+async function resumeWizardParaTurno(t) {
+  preencherWizardComTurno(t);
+  showScreen("screenWizard");
+  const modo = t.modo_deslocamento;
+  const evs = await eventosDoTurno(t);
+  const codigos = new Set((evs || []).map((e) => e.codigo_evento));
+  const comDesloc = modo === "COM" || modo === "SEMPRE";
+  if (comDesloc && !codigos.has("DESLOC_SEDE_FRENTE")) {
+    setWizardStep(2);
+    $("horaSaida").value = normHora(t.hora_inicio_turno) || nowTime();
+    $("hrSaida").value = String(t.horimetro_inicio_turno ?? "");
+    toast("Retomando — complete o deslocamento (etapa 2)");
+    return;
+  }
+  if (!codigos.has("INICIO_OPERACAO")) {
+    setWizardStep(4);
+    $("hrOp").value = String(t.last_hr ?? t.horimetro_inicio_turno ?? "");
+    $("horaOp").value = t.last_hora || horaPadrao();
+    toast("Retomando — início da operação no campo");
+    return;
+  }
+  showJourney();
+}
+
+async function resumirTurnoAberto() {
+  const saved = await Storage.getActiveTurn();
+  if (saved && (saved.id || saved.pending)) {
+    turn = { ...saved, ...(turn?.id === saved.id ? turn : {}) };
+  }
+  if (!turn?.id && !turn?.pending) {
+    toast("Nenhum turno salvo neste aparelho. Use «Novo turno».");
+    refreshHomeButtons();
+    return;
+  }
+  if (turn.status === "ENCERRADO") {
+    await Storage.clearActiveTurn();
+    turn = null;
+    toast("Turno já encerrado — abra um novo.");
+    refreshHomeButtons();
+    return;
+  }
+  if (turn.id && (await canSyncNow())) {
+    try {
+      const row = await sbGet(
+        "campo_turno",
+        `id=eq.${turn.id}&select=id,status,estado_jornada&limit=1`
+      );
+      if (row?.[0]?.status === "ENCERRADO") {
+        await Storage.clearActiveTurn();
+        turn = null;
+        toast("Turno encerrado no servidor.");
+        refreshHomeButtons();
+        return;
+      }
+      if (row?.[0]) {
+        turn.status = row[0].status;
+        turn.estado_jornada = row[0].estado_jornada || turn.estado_jornada;
+      }
+    } catch (e) {
+      console.warn("status turno", e);
+    }
+  }
+  refreshTurnExigeTalhao();
+  await hydrateTurnCiclo(turn);
+  const evs = await eventosDoTurno(turn);
+  const jaOperando = turnoTemInicioOperacao(evs);
+  if (jaOperando && turn.estado_jornada !== "OPERACAO_ATIVA") {
+    turn.estado_jornada = "OPERACAO_ATIVA";
+    if (turn.id && (await canSyncNow())) {
+      try {
+        await sbPatch("campo_turno", `id=eq.${turn.id}`, { estado_jornada: "OPERACAO_ATIVA" });
+      } catch (e) {
+        if (!isNetworkError(e)) console.warn("patch estado_jornada", e);
+      }
+    }
+  }
+  const emOperacao = turn.estado_jornada === "OPERACAO_ATIVA" || jaOperando;
+  await Storage.saveActiveTurn(turn);
+  if (emOperacao) {
+    showJourney();
+    toast("Turno retomado — continue a operação");
+    return;
+  }
+  await resumeWizardParaTurno(turn);
+}
+
 function setWizardStep(n) {
   [1, 2, 3, 4].forEach((i) => {
     $(`step${i}`).classList.toggle("hidden", i !== n);
@@ -758,7 +910,7 @@ async function registerEvent(codigo, extra = {}) {
     const evDef = catalog.eventos.find((e) => e.codigo === codigo);
     let hora = extra.hora;
     let horimetro = extra.horimetro;
-    if (evDef?.exige_hora && !hora) {
+    if ((evDef?.exige_hora || EVENTO_EXIGE_HORA_FALLBACK.has(codigo)) && !hora) {
       hora = promptHora(`Horário — ${evDef?.nome || codigo}`, horaPadrao());
       if (!hora) return;
     }
@@ -895,9 +1047,9 @@ function refreshHomeButtons() {
   $("btnContinuar").classList.toggle("hidden", !aberto);
   $("hintContinuar").classList.toggle("hidden", !aberto);
   if (aberto && turn.ciclo_ativo === false) {
-    $("btnContinuar").textContent = "Continuar operação (próximo talhão)";
+    $("btnContinuar").textContent = "Retomar operação (próximo talhão)";
   } else {
-    $("btnContinuar").textContent = "Continuar operação";
+    $("btnContinuar").textContent = "Retomar operação";
   }
 }
 
@@ -1524,7 +1676,7 @@ async function startWizardFlow() {
     }
     let msg = e.message || "Erro ao abrir turno — tente de novo";
     if (msg.includes("PGRST204") || msg.includes("Could not find")) {
-      msg = "Erro de versão do app — atualize a página (Catálogo OK · v27).";
+      msg = "Erro de versão do app — atualize a página (Catálogo OK · v28).";
     } else if (msg.length > 140) {
       msg = msg.slice(0, 140);
     }
@@ -1694,25 +1846,30 @@ async function boot() {
   } catch (e) {
     console.warn(e);
   }
+  refreshHomeButtons();
 
   wirePickCombos();
   $("operacao").addEventListener("change", onOperacaoChange);
   onOperacaoChange();
 
-  $("btnNovoTurno").addEventListener("click", () => {
+  $("btnNovoTurno").addEventListener("click", async () => {
+    const saved = await Storage.getActiveTurn();
+    const aberto = saved && (saved.id || saved.pending) && saved.status !== "ENCERRADO";
+    if (aberto) {
+      const seguir = window.confirm(
+        "Já existe um turno aberto neste aparelho.\n\nOK = continuar o turno\nCancelar = iniciar outro (só se o turno anterior estiver encerrado)"
+      );
+      if (seguir) {
+        turn = saved;
+        await resumirTurnoAberto();
+        return;
+      }
+    }
     setWizardStep(1);
     showScreen("screenWizard");
   });
 
-  $("btnContinuar").addEventListener("click", async () => {
-    if (!turn || turn.status === "ENCERRADO") {
-      toast("Nenhum turno aberto. Use «Novo turno».");
-      refreshHomeButtons();
-      return;
-    }
-    await hydrateTurnCiclo(turn);
-    showJourney();
-  });
+  $("btnContinuar").addEventListener("click", () => resumirTurnoAberto());
 
   $("btnProximoTalhao").addEventListener("click", () => startNextTalhao());
   $("btnInsumosPosFim").addEventListener("click", () => onEventClick("LANCAMENTO_INSUMOS"));
