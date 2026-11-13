@@ -54,19 +54,28 @@ const OPS_SEM_TALHAO_NOME = new Set(
   ].map(foldTxt)
 );
 
+function resolveExigeTalhao(op, nomeOperacao) {
+  if (op?.codigo && OPS_SEM_TALHAO_COD.has(op.codigo)) return false;
+  const nome = foldTxt(nomeOperacao || op?.nome);
+  if (nome && OPS_SEM_TALHAO_NOME.has(nome)) return false;
+  if (op?.exige_talhao != null) return !!op.exige_talhao;
+  return true;
+}
+
 function operacaoSemTalhaoConhecida() {
   const op = catalog?.operacoes?.find((o) => o.id === turn?.id_operacao_campo);
-  if (op?.codigo && OPS_SEM_TALHAO_COD.has(op.codigo)) return true;
-  const nome = foldTxt(turn?.operacao_nome || op?.nome);
-  return !!nome && OPS_SEM_TALHAO_NOME.has(nome);
+  return !resolveExigeTalhao(op, turn?.operacao_nome);
 }
 
 function operacaoExigeTalhao() {
-  if (turn?.exige_talhao != null) return !!turn.exige_talhao;
   const op = catalog?.operacoes?.find((o) => o.id === turn?.id_operacao_campo);
-  if (op?.exige_talhao != null) return !!op.exige_talhao;
-  if (operacaoSemTalhaoConhecida()) return false;
-  return true;
+  return resolveExigeTalhao(op, turn?.operacao_nome);
+}
+
+/** Atualiza flag no turno salvo (turnos abertos antes do v27). */
+function refreshTurnExigeTalhao() {
+  if (!turn) return;
+  turn.exige_talhao = operacaoExigeTalhao();
 }
 
 /** Só bloqueia fim operação / turno quando a operação usa fluxo de talhão. */
@@ -133,7 +142,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v26";
+const APP_VERSION = "v27";
 
 function foldTxt(s) {
   return String(s || "")
@@ -288,7 +297,7 @@ async function createOfflineTurn(payload, op, modo) {
     seq: 1,
     pending: true,
     exige_insumo: op.exige_insumo,
-    exige_talhao: op.exige_talhao,
+    exige_talhao: resolveExigeTalhao(op, op.nome),
     desloc_retorno_concluido: false,
     desloc_retorno_registrado: false,
     ciclo_ativo: false,
@@ -1428,7 +1437,7 @@ async function startWizardFlow() {
         estado_jornada: existing.estado_jornada,
         modo_deslocamento: modo,
         exige_insumo: op.exige_insumo,
-        exige_talhao: op.exige_talhao,
+        exige_talhao: resolveExigeTalhao(op, op.nome),
         operacao_nome: op.nome,
         id_operacao_campo: op.id,
         desloc_retorno_concluido: existing.desloc_retorno_concluido ?? saved?.desloc_retorno_concluido ?? false,
@@ -1451,7 +1460,7 @@ async function startWizardFlow() {
           ...ins[0],
           seq: 0,
           exige_insumo: op.exige_insumo,
-          exige_talhao: op.exige_talhao,
+          exige_talhao: resolveExigeTalhao(op, op.nome),
           desloc_retorno_concluido: false,
           desloc_retorno_registrado: false,
           ciclo_ativo: false,
@@ -1481,7 +1490,7 @@ async function startWizardFlow() {
             id: existing.id,
             modo_deslocamento: modo,
             exige_insumo: op.exige_insumo,
-            exige_talhao: op.exige_talhao,
+            exige_talhao: resolveExigeTalhao(op, op.nome),
           };
           turn.seq = await loadTurnMaxSeq();
           await hydrateTurnCiclo(turn);
@@ -1515,7 +1524,7 @@ async function startWizardFlow() {
     }
     let msg = e.message || "Erro ao abrir turno — tente de novo";
     if (msg.includes("PGRST204") || msg.includes("Could not find")) {
-      msg = "Erro de versão do app — atualize a página (Catálogo OK · v26).";
+      msg = "Erro de versão do app — atualize a página (Catálogo OK · v27).";
     } else if (msg.length > 140) {
       msg = msg.slice(0, 140);
     }
@@ -1601,6 +1610,7 @@ async function finishDeslocAndCiclo() {
 }
 
 function showJourney() {
+  refreshTurnExigeTalhao();
   renderJourneyHead();
   renderEventButtons();
   refreshTimeline();
@@ -1670,6 +1680,7 @@ async function boot() {
     if (turn.ciclo_ativo === undefined && !turn.id_ciclo) turn.ciclo_ativo = false;
     if (turn.desloc_retorno_concluido === undefined) turn.desloc_retorno_concluido = false;
     if (turn.desloc_retorno_registrado === undefined) turn.desloc_retorno_registrado = false;
+    refreshTurnExigeTalhao();
     await hydrateTurnCiclo(turn);
     await Storage.saveActiveTurn(turn);
   }
