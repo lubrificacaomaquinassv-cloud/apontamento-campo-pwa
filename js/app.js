@@ -152,7 +152,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v30";
+const APP_VERSION = "v31";
 
 function foldTxt(s) {
   return String(s || "")
@@ -1070,6 +1070,12 @@ function renderJourneyHead() {
     <span>${ciclo} · Retiro ${retiro} · Sync ${turn.sync_status || "PENDENTE"}</span>`;
 }
 
+async function discardLocalActiveTurn() {
+  await Storage.clearActiveTurn();
+  turn = null;
+  refreshHomeButtons();
+}
+
 function refreshHomeButtons() {
   const aberto =
     turn &&
@@ -1078,6 +1084,8 @@ function refreshHomeButtons() {
     (turn.id || turn.pending);
   $("btnContinuar").classList.toggle("hidden", !aberto);
   $("hintContinuar").classList.toggle("hidden", !aberto);
+  $("btnDescartarLocal").classList.toggle("hidden", !aberto);
+  $("hintDescartar").classList.toggle("hidden", !aberto);
   if (aberto && turn.ciclo_ativo === false) {
     $("btnContinuar").textContent = "Retomar operação (próximo talhão)";
   } else {
@@ -2038,23 +2046,52 @@ async function boot() {
   onOperacaoChange();
 
   $("btnNovoTurno").addEventListener("click", async () => {
-    const saved = await Storage.getActiveTurn();
-    const aberto = saved && (saved.id || saved.pending) && saved.status !== "ENCERRADO";
+    let saved = await Storage.getActiveTurn();
+    let aberto = saved && (saved.id || saved.pending) && saved.status !== "ENCERRADO";
+    if (aberto) {
+      turn = { ...saved };
+      const encerrou = await reconcileActiveTurnWithServer({ toast: true });
+      if (encerrou) {
+        aberto = false;
+        saved = null;
+      } else {
+        saved = await Storage.getActiveTurn();
+        aberto = saved && saved.status !== "ENCERRADO";
+      }
+    }
     if (aberto) {
       const seguir = window.confirm(
-        "Já existe um turno aberto neste aparelho.\n\nOK = continuar o turno\nCancelar = iniciar outro (só se o turno anterior estiver encerrado)"
+        "Já existe um turno aberto neste aparelho.\n\nOK = continuar o turno\nCancelar = tentar novo turno"
       );
       if (seguir) {
         turn = saved;
         await resumirTurnoAberto();
         return;
       }
+      const descartar = window.confirm(
+        "Descartar a jornada salva só neste celular?\n\n" +
+          "Isso NÃO apaga o turno no servidor (se já existir).\n\n" +
+          "OK = limpar e abrir novo\nCancelar = voltar"
+      );
+      if (!descartar) return;
+      await discardLocalActiveTurn();
     }
     setWizardStep(1);
+    $("dataOp").value = todayISO();
     showScreen("screenWizard");
   });
 
   $("btnContinuar").addEventListener("click", () => resumirTurnoAberto());
+
+  $("btnDescartarLocal").addEventListener("click", async () => {
+    const ok = window.confirm(
+      "Limpar o turno salvo neste aparelho?\n\n" +
+        "O registro no servidor (se houver) continua — fale com o gestor se ainda aparecer ABERTO lá."
+    );
+    if (!ok) return;
+    await discardLocalActiveTurn();
+    toast("Turno local removido — use «Novo turno».");
+  });
 
   $("btnProximoTalhao").addEventListener("click", () => startNextTalhao());
   $("btnInsumosPosFim").addEventListener("click", () => onEventClick("LANCAMENTO_INSUMOS"));
