@@ -152,7 +152,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v29";
+const APP_VERSION = "v30";
 
 function foldTxt(s) {
   return String(s || "")
@@ -759,6 +759,37 @@ async function resumeWizardParaTurno(t) {
   showJourney();
 }
 
+async function reconcileActiveTurnWithServer(opts = {}) {
+  if (!turn?.id || turn.pending) return false;
+  if (turn.status === "ENCERRADO") {
+    await Storage.clearActiveTurn();
+    turn = null;
+    if (opts.toast) toast("Turno já encerrado — abra um novo.");
+    return true;
+  }
+  if (!(await canSyncNow())) return false;
+  try {
+    const row = await sbGet(
+      "campo_turno",
+      `id=eq.${turn.id}&select=id,status,estado_jornada&limit=1`
+    );
+    if (row?.[0]?.status === "ENCERRADO") {
+      await Storage.clearActiveTurn();
+      turn = null;
+      if (opts.toast) toast("Turno encerrado no servidor — pode abrir novo.");
+      return true;
+    }
+    if (row?.[0]) {
+      turn.status = row[0].status;
+      turn.estado_jornada = row[0].estado_jornada || turn.estado_jornada;
+      await Storage.saveActiveTurn(turn);
+    }
+  } catch (e) {
+    console.warn("reconcile turno", e);
+  }
+  return false;
+}
+
 async function resumirTurnoAberto() {
   const saved = await Storage.getActiveTurn();
   if (saved && (saved.id || saved.pending)) {
@@ -769,33 +800,9 @@ async function resumirTurnoAberto() {
     refreshHomeButtons();
     return;
   }
-  if (turn.status === "ENCERRADO") {
-    await Storage.clearActiveTurn();
-    turn = null;
-    toast("Turno já encerrado — abra um novo.");
+  if (await reconcileActiveTurnWithServer({ toast: true })) {
     refreshHomeButtons();
     return;
-  }
-  if (turn.id && (await canSyncNow())) {
-    try {
-      const row = await sbGet(
-        "campo_turno",
-        `id=eq.${turn.id}&select=id,status,estado_jornada&limit=1`
-      );
-      if (row?.[0]?.status === "ENCERRADO") {
-        await Storage.clearActiveTurn();
-        turn = null;
-        toast("Turno encerrado no servidor.");
-        refreshHomeButtons();
-        return;
-      }
-      if (row?.[0]) {
-        turn.status = row[0].status;
-        turn.estado_jornada = row[0].estado_jornada || turn.estado_jornada;
-      }
-    } catch (e) {
-      console.warn("status turno", e);
-    }
   }
   refreshTurnExigeTalhao();
   await hydrateTurnCiclo(turn);
@@ -1853,7 +1860,7 @@ async function startWizardFlow() {
     }
     let msg = e.message || "Erro ao abrir turno — tente de novo";
     if (msg.includes("PGRST204") || msg.includes("Could not find")) {
-      msg = "Erro de versão do app — atualize a página (Catálogo OK · v29).";
+      msg = `Erro de versão do app — atualize a página (Catálogo OK · ${APP_VERSION}).`;
     } else if (msg.length > 140) {
       msg = msg.slice(0, 140);
     }
@@ -2012,6 +2019,7 @@ async function boot() {
     refreshTurnExigeTalhao();
     await hydrateTurnCiclo(turn);
     await Storage.saveActiveTurn(turn);
+    await reconcileActiveTurnWithServer({ toast: false });
   }
   refreshHomeButtons();
   try {
