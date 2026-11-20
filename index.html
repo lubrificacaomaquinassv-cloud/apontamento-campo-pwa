@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <meta name="theme-color" content="#0a1409" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <title>APONTAMENTO DE CAMPO — SANTA VERGÍNIA</title>
+  <title>Apontamento de Campo — Santa Vergínia</title>
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" href="icons/logo-placa-sv.png" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
@@ -16,8 +16,8 @@
     <header class="header">
       <div class="logo"><img src="icons/logo-placa-sv.png" alt="Santa Vergínia" /></div>
       <div>
-        <h1>APONTAMENTO DE CAMPO</h1>
-        <p>SANTA VERGÍNIA — DADOS OPERACOES FLORESTAIS</p>
+        <h1>Apontamento de Campo</h1>
+        <p>Santa Vergínia — Florestal</p>
       </div>
     </header>
 
@@ -108,7 +108,7 @@
     <section id="screenJourney" class="hidden">
       <div class="journey-head" id="journeyHead"></div>
       <div class="sec">Operação em andamento</div>
-      <p class="field-hint">1 Finalizar talhão · 2 Insumos · 3 Próximo talhão · Fim operação encerra o serviço no campo</p>
+      <p class="field-hint">Talhão: finalizar → insumos → próximo. Outro retiro no dia: «Desloc. entre frentes». Fim operação = acabou o serviço.</p>
       <div class="timeline" id="timeline"></div>
       <div id="eventButtons"></div>
       <div id="posCicloActions" class="hidden">
@@ -132,6 +132,19 @@
         <div class="field"><label for="nextHrOp">Horímetro início</label><input type="number" id="nextHrOp" step="0.1" min="0" required /></div>
         <button type="button" class="btn-primary" id="btnConfirmProximoTalhao">Confirmar talhão</button>
         <button type="button" class="btn-secondary" id="btnCancelProximoTalhao">Cancelar</button>
+      </div>
+      <div id="modalDeslocFrente" class="hidden">
+        <div class="sec">Deslocamento entre frentes</div>
+        <p class="field-hint">Saída do local atual → chegada no outro retiro. O turno continua (sem Fim operação).</p>
+        <div class="field"><label for="ffOrigemLoc">Origem (onde está)</label><select id="ffOrigemLoc"></select></div>
+        <div class="field"><label for="ffDestinoLoc">Destino (novo retiro)</label><select id="ffDestinoLoc"></select></div>
+        <div class="field"><label for="ffHoraSaida">Horário saída</label><input type="time" id="ffHoraSaida" required /></div>
+        <div class="field"><label for="ffHrSaida">Horímetro saída</label><input type="number" id="ffHrSaida" step="0.1" min="0" required /></div>
+        <div class="field"><label for="ffHoraChegada">Horário chegada no destino</label><input type="time" id="ffHoraChegada" required /></div>
+        <div class="field"><label for="ffHrChegada">Horímetro chegada</label><input type="number" id="ffHrChegada" step="0.1" min="0" required /></div>
+        <div class="field" id="wrapFfTalhao"><label for="ffTalhaoCod">Talhão no destino</label><input type="text" id="ffTalhaoCod" placeholder="Ex: 435" /></div>
+        <button type="button" class="btn-primary" id="btnConfirmDeslocFrente">Confirmar deslocamento</button>
+        <button type="button" class="btn-secondary" id="btnCancelDeslocFrente">Cancelar</button>
       </div>
       <div id="modalDeslocRetorno" class="hidden">
         <div class="sec">Retorno à sede</div>
@@ -161,7 +174,7 @@
   <script src="config.js"></script>
   <script src="js/storage.js?v=25"></script>
   <script src="js/api.js?v=25"></script>
-  <script src="js/app.js?v=25"></script>
+  <script src="js/app.js?v=29"></script>
   <script>
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker
