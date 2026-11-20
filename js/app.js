@@ -2,6 +2,13 @@
 let catalog = null;
 let turn = null; // { id, client_turn_id, seq, id_ciclo, ... }
 
+/** Paradas que permitem deslocamento à sede/oficina antes de «Fim operação». */
+const PARADAS_LIBERAM_DESLOC_SEDE = new Set([
+  "PARADA_MECANICA",
+  "PARADA_CLIMA",
+  "PARADA_TECNICA",
+]);
+
 const JOURNEY_BUTTONS = [
   { codigo: "PARADA_ALMOCO", label: "Parada almoço", hint: "Somente horário" },
   { codigo: "RETORNO_ALMOCO", label: "Retorno almoço", hint: "Horário do retorno" },
@@ -27,6 +34,15 @@ const JOURNEY_BUTTONS = [
 
 function turnoExigeDeslocRetorno() {
   return turn?.modo_deslocamento === "COM";
+}
+
+/** Turno com parada mecânica/clima/técnica → pode ir à sede/oficina sem finalizar talhão. */
+function turnoTemParadaDeslocSede() {
+  const codigos = [
+    ...(turn?.pendingEvents || []).map((e) => e.codigo_evento),
+    ...(turn?._timeline_codigos || []),
+  ];
+  return codigos.some((c) => PARADAS_LIBERAM_DESLOC_SEDE.has(c));
 }
 
 function etapaInsumosPendente() {
@@ -152,7 +168,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v31";
+const APP_VERSION = "v32";
 
 function foldTxt(s) {
   return String(s || "")
@@ -966,18 +982,23 @@ async function registerEvent(codigo, extra = {}) {
 
 async function refreshTimeline() {
   if (!turn?.id || !(await canSyncNow())) {
+    turn._timeline_codigos = (turn?.pendingEvents || []).map((e) => e.codigo_evento);
     $("timeline").innerHTML = turn?.pendingEvents?.length
       ? `<div>${turn.pendingEvents.length} evento(s) pendentes · sync ao conectar</div>`
       : "<div>—</div>";
+    renderEventButtons();
     return;
   }
   const rows = await sbGet(
     "fato_evento_campo",
     `id_turno=eq.${turn.id}&select=seq,codigo_evento,hora,horimetro&order=seq`
   );
+  turn._timeline_codigos = rows.map((r) => r.codigo_evento);
+  await Storage.saveActiveTurn(turn);
   $("timeline").innerHTML = rows
     .map((r) => `<div>${r.seq}. ${r.codigo_evento} ${r.hora || ""} ${r.horimetro ?? ""}</div>`)
     .join("");
+  renderEventButtons();
 }
 
 function localNome(id) {
@@ -1247,6 +1268,7 @@ function renderEventButtons() {
   const wrap = $("eventButtons");
   wrap.innerHTML = "";
   const campoEncerrado = !!turn.operacao_encerrada;
+  const deslocPorParada = turnoTemParadaDeslocSede() && !turn.desloc_retorno_registrado;
   const precisaDesloc =
     turnoExigeDeslocRetorno() && campoEncerrado && !turn.desloc_retorno_concluido;
   const deslocOpcional =
@@ -1256,7 +1278,8 @@ function renderEventButtons() {
     const btn = document.createElement("button");
     btn.type = "button";
     let cls = "btn-event" + (b.highlight ? " highlight" : "");
-    if (b.codigo === "DESLOC_FRENTE_SEDE" && (precisaDesloc || deslocOpcional)) cls += " highlight";
+    if (b.codigo === "DESLOC_FRENTE_SEDE" && (precisaDesloc || deslocOpcional || deslocPorParada))
+      cls += " highlight";
     if (b.codigo === "FIM_OPERACAO" && talhaoProntoParaSeguir() && !campoEncerrado) cls += " highlight";
     btn.className = cls;
     let hint = b.hint;
@@ -1317,14 +1340,20 @@ function renderEventButtons() {
       }
     }
     if (b.codigo === "DESLOC_FRENTE_SEDE") {
-      if (cicloPendenteFinalizarTalhao() || etapaInsumosPendente()) {
+      if (turn.desloc_retorno_registrado) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Retorno sede já registrado</small>`;
+      } else if (deslocPorParada) {
+        btn.disabled = false;
+        hint =
+          "Após parada mecânica, clima ou técnica — oficina / sede sem finalizar talhão";
+        btn.innerHTML = `${b.label}<small>${hint}</small>`;
+      } else if (cicloPendenteFinalizarTalhao() || etapaInsumosPendente()) {
         btn.disabled = true;
         btn.innerHTML = `${b.label}<small>Finalize o talhão / insumos primeiro</small>`;
       } else if (!campoEncerrado) {
         btn.disabled = true;
         btn.innerHTML = `${b.label}<small>Use «Fim operação» antes do retorno</small>`;
-      } else if (turn.desloc_retorno_registrado) {
-        btn.disabled = true;
       }
     }
     if (b.codigo === "FINAL_TURNO" && !podeEncerrarTurno()) {
@@ -1488,21 +1517,24 @@ async function onEventClick(codigo) {
     return;
   }
   if (codigo === "DESLOC_FRENTE_SEDE") {
-    if (cicloPendenteFinalizarTalhao()) {
-      toast("Finalize o talhão antes do retorno à sede.");
-      return;
-    }
-    if (etapaInsumosPendente()) {
-      toast("Lance os insumos do talhão antes do retorno à sede.");
-      return;
-    }
-    if (!turn.operacao_encerrada) {
-      toast("Use «Fim operação» antes do retorno à sede.");
-      return;
-    }
+    const deslocPorParada = turnoTemParadaDeslocSede();
     if (turn.desloc_retorno_registrado) {
       toast("Retorno à sede já registrado — use Fim turno.");
       return;
+    }
+    if (!deslocPorParada) {
+      if (cicloPendenteFinalizarTalhao()) {
+        toast("Finalize o talhão antes do retorno à sede.");
+        return;
+      }
+      if (etapaInsumosPendente()) {
+        toast("Lance os insumos do talhão antes do retorno à sede.");
+        return;
+      }
+      if (!turn.operacao_encerrada) {
+        toast("Use «Fim operação» antes do retorno à sede.");
+        return;
+      }
     }
     openModalDeslocRetorno();
     return;
