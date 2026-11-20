@@ -1,4 +1,4 @@
-const CACHE_NAME = "campo-sv-v32";
+const CACHE_NAME = "campo-sv-v33";
 const ASSETS = [
   "./",
   "./index.html",
@@ -46,6 +46,11 @@ function isAppRequest(url) {
   return true;
 }
 
+/** JS/CSS sempre rede primeiro (evita ficar preso em v31 no cache offline). */
+function isMutableAsset(url) {
+  return /\.(js|css)(\?|$)/i.test(url.pathname);
+}
+
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
   const url = new URL(e.request.url);
@@ -88,6 +93,19 @@ self.addEventListener("fetch", (e) => {
   // App shell: cache primeiro (pátio sem sinal não trava em fetch)
   e.respondWith(
     (async () => {
+      if (isMutableAsset(url)) {
+        try {
+          const res = await fetch(e.request, { cache: "no-store" });
+          if (res.ok) {
+            const c = await caches.open(CACHE_NAME);
+            await c.put(e.request, res.clone());
+          }
+          return res;
+        } catch (_net) {
+          const cached = await caches.match(e.request);
+          if (cached) return cached;
+        }
+      }
       const cached = await caches.match(e.request);
       if (cached) return cached;
       try {
