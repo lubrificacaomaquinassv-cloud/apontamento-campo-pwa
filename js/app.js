@@ -11,6 +11,11 @@ const JOURNEY_BUTTONS = [
     label: "Parada técnica",
     hint: "Aguardando liberação de área / frente",
   },
+  {
+    codigo: "DESLOC_FRENTE_FRENTE",
+    label: "Desloc. entre frentes",
+    hint: "Outro retiro no mesmo turno (sem sede)",
+  },
   { codigo: "PARADA_MECANICA", label: "Parada mecânica", hint: "Horário e HR se houver" },
   { codigo: "RETORNO_OPERACAO", label: "Retorno operação", hint: "Após parada" },
   { codigo: "FINALIZAR_TALHAO", label: "Finalizar talhão", hint: "Hora e horímetro deste talhão" },
@@ -147,7 +152,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v28";
+const APP_VERSION = "v29";
 
 function foldTxt(s) {
   return String(s || "")
@@ -579,6 +584,7 @@ const EVENTO_EXIGE_HORA_FALLBACK = new Set([
   "RETORNO_ALMOCO",
   "PARADA_CLIMA",
   "PARADA_TECNICA",
+  "DESLOC_FRENTE_FRENTE",
   "PARADA_MECANICA",
   "RETORNO_OPERACAO",
 ]);
@@ -930,6 +936,7 @@ async function registerEvent(codigo, extra = {}) {
       client_event_id: crypto.randomUUID(),
       id_turno: turn.id,
       id_ciclo: extra.id_ciclo || turn.id_ciclo,
+      id_deslocamento: extra.id_deslocamento ?? null,
       seq,
       codigo_evento: codigo,
       hora: hora || null,
@@ -977,6 +984,24 @@ function closeModal() {
   $("modalProximoTalhao").classList.add("hidden");
   $("modalInsumos").classList.add("hidden");
   $("modalDeslocRetorno").classList.add("hidden");
+  $("modalDeslocFrente").classList.add("hidden");
+}
+
+function openModalDeslocFrente() {
+  fillSelect($("ffOrigemLoc"), catalog.locais, "id", (l) => l.nome);
+  fillSelect($("ffDestinoLoc"), catalog.locais, "id", (l) => l.nome);
+  if (turn.retiro_id) $("ffOrigemLoc").value = String(turn.retiro_id);
+  $("ffHoraSaida").value = horaPadrao();
+  $("ffHrSaida").value = String(turn.last_hr ?? "");
+  $("ffHoraChegada").value = horaPadrao();
+  $("ffHrChegada").value = String(turn.last_hr ?? "");
+  $("ffTalhaoCod").value = turn.talhao_codigo || "";
+  $("wrapFfTalhao").classList.toggle("hidden", !operacaoExigeTalhao());
+  $("modalProximoTalhao").classList.add("hidden");
+  $("modalInsumos").classList.add("hidden");
+  $("modalDeslocRetorno").classList.add("hidden");
+  $("modalDeslocFrente").classList.remove("hidden");
+  $("modalOverlay").classList.remove("hidden");
 }
 
 function openModalDeslocRetorno() {
@@ -1062,7 +1087,8 @@ function refreshPosCicloUI() {
   if (!aberto) return;
   const tal = turn.talhao_codigo || "—";
   if (!operacaoExigeTalhao() && turn.ciclo_ativo !== false && !turn.operacao_encerrada) {
-    $("posCicloHint").textContent = "Serviço sem talhão — use «Fim operação» (hora e horímetro).";
+    $("posCicloHint").textContent =
+      "Sem talhão — «Desloc. entre frentes» para outro retiro, ou «Fim operação» quando acabar.";
     $("btnInsumosPosFim").classList.add("hidden");
     $("btnSemInsumoTalhao").classList.add("hidden");
     $("btnProximoTalhao").classList.add("hidden");
@@ -1253,6 +1279,28 @@ function renderEventButtons() {
         btn.innerHTML = `${b.label}<small>Lance os insumos do talhão primeiro</small>`;
       }
     }
+    if (b.codigo === "DESLOC_FRENTE_FRENTE") {
+      if (campoEncerrado) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Serviço já encerrado — use retorno sede</small>`;
+      } else if (etapaInsumosPendente()) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Lance os insumos do talhão primeiro</small>`;
+      } else if (operacaoExigeTalhao() && turn.ciclo_ativo !== false && !turn.fase_pos_fim) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Finalize o talhão antes de mudar de retiro</small>`;
+      } else if (
+        operacaoExigeTalhao() &&
+        turn.ciclo_ativo === false &&
+        operacaoExigeInsumo() &&
+        !turn.insumos_talhao_concluido
+      ) {
+        btn.disabled = true;
+        btn.innerHTML = `${b.label}<small>Conclua insumos do talhão anterior</small>`;
+      } else if (!operacaoExigeTalhao() && turn.ciclo_ativo !== false) {
+        cls += " highlight";
+      }
+    }
     if (b.codigo === "DESLOC_FRENTE_SEDE") {
       if (cicloPendenteFinalizarTalhao() || etapaInsumosPendente()) {
         btn.disabled = true;
@@ -1395,6 +1443,35 @@ async function onEventClick(codigo) {
     toast("Serviço no campo encerrado. Retorno à sede (se houver) e Fim turno.");
     return;
   }
+  if (codigo === "DESLOC_FRENTE_FRENTE") {
+    if (turn.operacao_encerrada) {
+      toast("Serviço no campo já encerrado.");
+      return;
+    }
+    if (etapaInsumosPendente()) {
+      toast("Lance os insumos do talhão antes de mudar de retiro.");
+      return;
+    }
+    if (operacaoExigeTalhao() && turn.ciclo_ativo !== false && !turn.fase_pos_fim) {
+      toast("Use «Finalizar talhão» antes do deslocamento para outro retiro.");
+      return;
+    }
+    if (
+      operacaoExigeTalhao() &&
+      turn.ciclo_ativo === false &&
+      operacaoExigeInsumo() &&
+      !turn.insumos_talhao_concluido
+    ) {
+      toast("Conclua os insumos do talhão anterior.");
+      return;
+    }
+  if (!turn?.id || !(await canSyncNow())) {
+      toast("Deslocamento entre frentes exige internet e turno no servidor.");
+      return;
+    }
+    openModalDeslocFrente();
+    return;
+  }
   if (codigo === "DESLOC_FRENTE_SEDE") {
     if (cicloPendenteFinalizarTalhao()) {
       toast("Finalize o talhão antes do retorno à sede.");
@@ -1485,6 +1562,106 @@ async function onEventClick(codigo) {
     return;
   }
   await registerEvent(codigo, {});
+}
+
+async function confirmDeslocFrente() {
+  const origemId = parseInt($("ffOrigemLoc").value, 10) || null;
+  const destinoId = parseInt($("ffDestinoLoc").value, 10) || null;
+  const horaSaida = $("ffHoraSaida").value;
+  const horaChegada = $("ffHoraChegada").value;
+  const hrSaida = parseFloat($("ffHrSaida").value);
+  const hrChegada = parseFloat($("ffHrChegada").value);
+  const talhao = $("ffTalhaoCod").value.trim() || null;
+  if (
+    !origemId ||
+    !destinoId ||
+    origemId === destinoId ||
+    !horaSaida ||
+    !horaChegada ||
+    !Number.isFinite(hrSaida) ||
+    !Number.isFinite(hrChegada)
+  ) {
+    toast("Preencha origem, destino (diferentes), horários e horímetros");
+    return;
+  }
+  if (operacaoExigeTalhao() && !talhao) {
+    toast("Informe o talhão no destino");
+    return;
+  }
+  if (!validarHorimetro(hrChegada, "Chegada")) return;
+  closeModal();
+
+  if (turn.ciclo_ativo !== false) {
+    await fecharCicloAtual(horaSaida, hrSaida);
+  }
+
+  const deslocRow = await sbPost("fato_deslocamentos", {
+    client_desloc_id: crypto.randomUUID(),
+    id_turno: turn.id,
+    tipo: "TALHAO_TALHAO",
+    origem_local_id: origemId,
+    destino_local_id: destinoId,
+    data: turn.data || todayISO(),
+    hora_saida: horaSaida,
+    hora_chegada: horaChegada,
+    horimetro_saida: hrSaida,
+    horimetro_chegada: hrChegada,
+    observacao: `${localNome(origemId)} → ${localNome(destinoId)}`,
+  });
+
+  await registerEvent("DESLOC_FRENTE_FRENTE", {
+    hora: horaSaida,
+    horimetro: hrSaida,
+    retiro_id: origemId,
+    observacao: `→ ${localNome(destinoId)}`,
+    id_deslocamento: deslocRow?.[0]?.id,
+  });
+
+  const seq = await getNextCicloSeq();
+  const ciclo = await sbPost("campo_ciclo_operacao", {
+    id_turno: turn.id,
+    seq,
+    talhao_codigo: operacaoExigeTalhao() ? talhao : null,
+    retiro_id: destinoId,
+    status: "ATIVO",
+    hora_inicio: horaChegada,
+    horimetro_ini: hrChegada,
+  });
+  turn.id_ciclo = ciclo[0].id;
+  turn.talhao_codigo = operacaoExigeTalhao() ? talhao : null;
+  turn.retiro_id = destinoId;
+  turn.last_hr = hrChegada;
+  turn.last_hora = normHora(horaChegada);
+  turn.ciclo_ativo = true;
+  turn.fase_pos_fim = false;
+  turn.insumos_talhao_concluido = operacaoExigeTalhao() ? false : true;
+  turn.insumo_lancado_talhao = false;
+  turn.operacao_encerrada = false;
+  turn.id_ciclo_fechado = null;
+
+  if (operacaoExigeTalhao()) {
+    await registerEvent("PARADA_MUDANCA_TALHAO", {
+      hora: horaChegada,
+      talhao_codigo: talhao,
+      retiro_id: destinoId,
+      observacao: `Mudança de retiro — ${localNome(origemId)} → ${localNome(destinoId)}`,
+    });
+  }
+
+  await registerEvent("INICIO_OPERACAO", {
+    hora: horaChegada,
+    horimetro: hrChegada,
+    retiro_id: destinoId,
+    talhao_codigo: turn.talhao_codigo,
+  });
+  await sbPatch("campo_turno", `id=eq.${turn.id}`, { estado_jornada: "OPERACAO_ATIVA" });
+  await Storage.saveActiveTurn(turn);
+  renderJourneyHead();
+  refreshPosCicloUI();
+  refreshHomeButtons();
+  renderEventButtons();
+  await refreshTimeline();
+  toast(`Deslocamento registrado — ${localNome(destinoId)}`);
 }
 
 async function confirmDeslocRetorno() {
@@ -1676,7 +1853,7 @@ async function startWizardFlow() {
     }
     let msg = e.message || "Erro ao abrir turno — tente de novo";
     if (msg.includes("PGRST204") || msg.includes("Could not find")) {
-      msg = "Erro de versão do app — atualize a página (Catálogo OK · v28).";
+      msg = "Erro de versão do app — atualize a página (Catálogo OK · v29).";
     } else if (msg.length > 140) {
       msg = msg.slice(0, 140);
     }
@@ -1914,6 +2091,8 @@ async function boot() {
   $("btnCancelInsumo").addEventListener("click", () => closeModal());
   $("btnConfirmDeslocRetorno").addEventListener("click", () => confirmDeslocRetorno());
   $("btnCancelDeslocRetorno").addEventListener("click", () => closeModal());
+  $("btnConfirmDeslocFrente").addEventListener("click", () => confirmDeslocFrente());
+  $("btnCancelDeslocFrente").addEventListener("click", () => closeModal());
   $("btnVoltarInicio").addEventListener("click", () => {
     refreshHomeButtons();
     showScreen("screenHome");
