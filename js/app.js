@@ -168,7 +168,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v32";
+const APP_VERSION = "v33";
 
 function foldTxt(s) {
   return String(s || "")
@@ -698,6 +698,34 @@ function validarHorimetro(hr, label) {
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
+}
+
+async function hardRefreshPwaCaches() {
+  if ("serviceWorker" in navigator) {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    for (const r of regs) await r.unregister();
+  }
+  if (typeof caches !== "undefined") {
+    const keys = await caches.keys();
+    await Promise.all(keys.map((k) => caches.delete(k)));
+  }
+  location.reload();
+}
+
+/** Compara versão publicada (GitHub) com a em execução; corrige cache antigo do SW. */
+async function ensureLatestAppBundle() {
+  if (!navigator.onLine) return;
+  try {
+    const res = await fetch(`./js/app.js?probe=${Date.now()}`, { cache: "no-store" });
+    if (!res.ok) return;
+    const text = await res.text();
+    const m = text.match(/const APP_VERSION = "(v\d+)"/);
+    if (!m || m[1] === APP_VERSION) return;
+    toast(`Nova versão ${m[1]} disponível — atualizando…`, 4000);
+    await hardRefreshPwaCaches();
+  } catch (e) {
+    console.warn("probe versão", e);
+  }
 }
 
 function showScreen(name) {
@@ -2036,6 +2064,7 @@ async function boot() {
   $("horaOp").value = nowTime();
 
   try {
+    await ensureLatestAppBundle();
     await initCatalogs();
     $("syncLabel").textContent = `Catálogo: OK · ${APP_VERSION}`;
     $("syncLabel").className = "ok";
@@ -2220,6 +2249,8 @@ async function boot() {
       await refreshTimeline();
       renderEventButtons();
       refreshPosCicloUI();
+      await ensureLatestAppBundle();
+      $("syncLabel").textContent = `Catálogo: OK · ${APP_VERSION}`;
       toast("Atualizado / sincronizado");
     } catch (e) {
       toast(e.message);
