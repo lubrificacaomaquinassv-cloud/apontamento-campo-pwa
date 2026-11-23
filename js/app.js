@@ -168,7 +168,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v33";
+const APP_VERSION = "v35";
 
 function foldTxt(s) {
   return String(s || "")
@@ -530,6 +530,19 @@ function advanceWizardFromStep1() {
   }
 }
 
+/** Quantidade do insumo: 0.6, 0,6 ou 1500. Não digite ML/LTS — a unidade vem do catálogo (LT/KG). */
+function parseDecimalQty(raw) {
+  if (raw == null || raw === "") return NaN;
+  let s = String(raw).trim().replace(/\s+/g, "");
+  if (!s) return NaN;
+  if (s.includes(",") && s.includes(".")) {
+    s = s.replace(/\./g, "").replace(",", ".");
+  } else if (s.includes(",")) {
+    s = s.replace(",", ".");
+  }
+  return parseFloat(s);
+}
+
 function nowTime() {
   const d = new Date();
   return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -640,12 +653,16 @@ async function hydrateTurnCiclo(t) {
     t.retiro_id = last.retiro_id || t.retiro_id;
     t.ciclo_ativo = last.status === "ATIVO";
     if (last.status === "ATIVO") {
-      t.fase_pos_fim = false;
+      if (t.fase_pos_fim !== true) t.fase_pos_fim = false;
       t.last_hr = last.horimetro_ini ?? t.last_hr;
       t.last_hora = normHora(last.hora_inicio) || t.last_hora;
     } else {
+      t.ciclo_ativo = false;
       t.last_hr = last.horimetro_fim ?? last.horimetro_ini ?? t.last_hr;
       t.last_hora = normHora(last.hora_fim) || normHora(last.hora_inicio) || t.last_hora;
+      if (t.insumos_talhao_concluido !== true && t.fase_pos_fim !== true) {
+        t.insumos_talhao_concluido = !!t.insumos_talhao_concluido;
+      }
     }
     const evs = await sbGet(
       "fato_evento_campo",
@@ -756,6 +773,29 @@ function turnoTemInicioOperacao(evs) {
   return (evs || []).some((e) => e.codigo_evento === "INICIO_OPERACAO");
 }
 
+/** Turno já passou do wizard (no campo ou entre talhões), mesmo se o servidor ainda diz TURNO_ABERTO. */
+function turnoEmJornadaAtiva(t, evs) {
+  if (!t) return false;
+  if (t.pending && !turnoTemInicioOperacao(evs) && t.ultima_tela !== "journey") return false;
+  if (t.estado_jornada === "OPERACAO_ATIVA") return true;
+  if (t.ultima_tela === "journey" && t.id) return true;
+  if (turnoTemInicioOperacao(evs)) return true;
+  if (t.id && (t.id_ciclo || t.ciclo_ativo === false)) return true;
+  if (t.fase_pos_fim || t.insumos_talhao_concluido) return true;
+  if (t.ciclo_ativo === true && t.talhao_codigo) return true;
+  return false;
+}
+
+function turnoPrecisaDeslocamentoFrente(t, evs) {
+  const modo = t?.modo_deslocamento;
+  const comDesloc = modo === "COM" || modo === "SEMPRE";
+  if (!comDesloc) return false;
+  const codigos = new Set((evs || []).map((e) => e.codigo_evento));
+  if (codigos.has("DESLOC_SEDE_FRENTE")) return false;
+  if (turnoEmJornadaAtiva(t, evs)) return false;
+  return true;
+}
+
 function preencherWizardComTurno(t) {
   if (t.data) $("dataOp").value = t.data;
   if (t.hora_inicio_turno) $("horaTurno").value = normHora(t.hora_inicio_turno);
@@ -780,13 +820,20 @@ function preencherWizardComTurno(t) {
 }
 
 async function resumeWizardParaTurno(t) {
+  const evs = await eventosDoTurno(t);
+  if (turnoEmJornadaAtiva(t, evs)) {
+    if (turnoTemInicioOperacao(evs) && t.estado_jornada !== "OPERACAO_ATIVA") {
+      t.estado_jornada = "OPERACAO_ATIVA";
+      await Storage.saveActiveTurn(t);
+    }
+    showJourney();
+    toast("Turno retomado — continue de onde parou");
+    return;
+  }
   preencherWizardComTurno(t);
   showScreen("screenWizard");
-  const modo = t.modo_deslocamento;
-  const evs = await eventosDoTurno(t);
   const codigos = new Set((evs || []).map((e) => e.codigo_evento));
-  const comDesloc = modo === "COM" || modo === "SEMPRE";
-  if (comDesloc && !codigos.has("DESLOC_SEDE_FRENTE")) {
+  if (turnoPrecisaDeslocamentoFrente(t, evs)) {
     setWizardStep(2);
     $("horaSaida").value = normHora(t.hora_inicio_turno) || nowTime();
     $("hrSaida").value = String(t.horimetro_inicio_turno ?? "");
@@ -834,6 +881,52 @@ async function reconcileActiveTurnWithServer(opts = {}) {
   return false;
 }
 
+function mensagemRetomadaJornada(t) {
+  if (t?.fase_pos_fim) return "Lance insumos ou «Próximo talhão»";
+  if (t?.ciclo_ativo === false) return "Entre talhões — insumos, próximo talhão ou fim operação";
+  if (t?.operacao_encerrada) return "Retorno sede / fim turno";
+  return "Paradas, finalizar talhão, desloc. entre frentes";
+}
+
+async function continuarTurnoSalvo(opts = {}) {
+  const { reconcileToast = true, showToast = true, autoBoot = false } = opts;
+  refreshTurnExigeTalhao();
+  await hydrateTurnCiclo(turn);
+  const evs = await eventosDoTurno(turn);
+  const emJornada = turnoEmJornadaAtiva(turn, evs);
+  if (emJornada && turn.estado_jornada !== "OPERACAO_ATIVA") {
+    turn.estado_jornada = "OPERACAO_ATIVA";
+    if (turn.id && (await canSyncNow())) {
+      try {
+        await sbPatch("campo_turno", `id=eq.${turn.id}`, { estado_jornada: "OPERACAO_ATIVA" });
+      } catch (e) {
+        if (!isNetworkError(e)) console.warn("patch estado_jornada", e);
+      }
+    }
+  }
+  await Storage.saveActiveTurn(turn);
+  if (emJornada) {
+    showJourney();
+    if (showToast) {
+      const prefix = autoBoot ? "Jornada retomada" : "Turno retomado";
+      toast(`${prefix} — ${mensagemRetomadaJornada(turn)}`, autoBoot ? 5500 : 4500);
+    }
+    return "journey";
+  }
+  await resumeWizardParaTurno(turn);
+  return "wizard";
+}
+
+async function tentarRetomadaAutomaticaNoBoot() {
+  if (!turn || turn.status === "ENCERRADO" || turn.status === "CANCELADO") return false;
+  if (!(turn.id || turn.pending)) return false;
+  if (await reconcileActiveTurnWithServer({ toast: false })) return false;
+  const evs = await eventosDoTurno(turn);
+  if (!turnoEmJornadaAtiva(turn, evs)) return false;
+  await continuarTurnoSalvo({ reconcileToast: false, showToast: true, autoBoot: true });
+  return true;
+}
+
 async function resumirTurnoAberto() {
   const saved = await Storage.getActiveTurn();
   if (saved && (saved.id || saved.pending)) {
@@ -848,28 +941,7 @@ async function resumirTurnoAberto() {
     refreshHomeButtons();
     return;
   }
-  refreshTurnExigeTalhao();
-  await hydrateTurnCiclo(turn);
-  const evs = await eventosDoTurno(turn);
-  const jaOperando = turnoTemInicioOperacao(evs);
-  if (jaOperando && turn.estado_jornada !== "OPERACAO_ATIVA") {
-    turn.estado_jornada = "OPERACAO_ATIVA";
-    if (turn.id && (await canSyncNow())) {
-      try {
-        await sbPatch("campo_turno", `id=eq.${turn.id}`, { estado_jornada: "OPERACAO_ATIVA" });
-      } catch (e) {
-        if (!isNetworkError(e)) console.warn("patch estado_jornada", e);
-      }
-    }
-  }
-  const emOperacao = turn.estado_jornada === "OPERACAO_ATIVA" || jaOperando;
-  await Storage.saveActiveTurn(turn);
-  if (emOperacao) {
-    showJourney();
-    toast("Turno retomado — continue a operação");
-    return;
-  }
-  await resumeWizardParaTurno(turn);
+  await continuarTurnoSalvo({ showToast: true, autoBoot: false });
 }
 
 function setWizardStep(n) {
@@ -2020,6 +2092,10 @@ function showJourney() {
   refreshTimeline();
   refreshPosCicloUI();
   refreshHomeButtons();
+  if (turn) {
+    turn.ultima_tela = "journey";
+    Storage.saveActiveTurn(turn).catch(console.warn);
+  }
   showScreen("screenJourney");
 }
 
@@ -2076,8 +2152,6 @@ async function boot() {
       9000
     );
   }
-  showScreen("screenHome");
-
   const saved = await Storage.getActiveTurn();
   if (saved?.id || saved?.pending) {
     turn = saved;
@@ -2089,6 +2163,13 @@ async function boot() {
     await hydrateTurnCiclo(turn);
     await Storage.saveActiveTurn(turn);
     await reconcileActiveTurnWithServer({ toast: false });
+    if (await tentarRetomadaAutomaticaNoBoot()) {
+      /* já na jornada — não ficar na home */
+    } else {
+      showScreen("screenHome");
+    }
+  } else {
+    showScreen("screenHome");
   }
   refreshHomeButtons();
   try {
@@ -2162,7 +2243,7 @@ async function boot() {
   $("insumoSelect").addEventListener("change", updateInsumoUnidadeHint);
   $("btnConfirmInsumo").addEventListener("click", async () => {
     const id = parseInt($("insumoSelect").value, 10);
-    const qtd = parseFloat($("insumoQtd").value);
+    const qtd = parseDecimalQty($("insumoQtd").value);
     const ins = catalog.insumos.find((i) => i.id === id);
     if (!ins || !Number.isFinite(qtd) || qtd <= 0) {
       toast("Selecione insumo e quantidade");
