@@ -123,11 +123,41 @@ function talhaoProntoParaSeguir() {
   return true;
 }
 
+/** Insumos ainda podem ser lançados após «Fim operação» (opcional, não trava turno). */
+function podeLancarInsumos() {
+  if (!turn || !operacaoExigeInsumo()) return false;
+  if (turn.fase_pos_fim) return true;
+  if (turn.operacao_encerrada) return true;
+  return turn.ciclo_ativo === false;
+}
+
+function retornoSedeOk() {
+  if (!turn) return false;
+  return (
+    turn.desloc_retorno_registrado ||
+    turn.desloc_retorno_concluido ||
+    !turnoExigeDeslocRetorno()
+  );
+}
+
+/** Após fim da operação, insumos pendentes não bloqueiam encerramento. */
 function podeEncerrarTurno() {
-  if (!talhaoProntoParaSeguir()) return false;
+  if (!turn) return false;
+  if (cicloPendenteFinalizarTalhao()) return false;
   if (!turn.operacao_encerrada) return false;
-  if (turnoExigeDeslocRetorno() && !turn.desloc_retorno_concluido) return false;
-  return true;
+  return retornoSedeOk();
+}
+
+/** Corrige flags locais incoerentes (ex.: fase insumos com operação já encerrada). */
+function normalizarEstadoTurno() {
+  if (!turn) return;
+  if (turn.operacao_encerrada) {
+    if (turn.fase_pos_fim) turn.fase_pos_fim = false;
+    if (turn.ciclo_ativo !== false) turn.ciclo_ativo = false;
+  }
+  if (turn.desloc_retorno_registrado && !turn.desloc_retorno_concluido) {
+    turn.desloc_retorno_concluido = true;
+  }
 }
 
 /** Após lançar insumo, libera próximo talhão / fim operação. */
@@ -168,7 +198,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-const APP_VERSION = "v35";
+const APP_VERSION = "v36";
 
 function foldTxt(s) {
   return String(s || "")
@@ -670,11 +700,20 @@ async function hydrateTurnCiclo(t) {
     );
     const lastFinalizar = [...(evs || [])].reverse().find((e) => e.codigo_evento === "FINALIZAR_TALHAO");
     const lastFimOp = [...(evs || [])].reverse().find((e) => e.codigo_evento === "FIM_OPERACAO");
-    if (lastFinalizar && lastFimOp && lastFimOp.seq > lastFinalizar.seq) {
+    const lastFimTurno = [...(evs || [])].reverse().find((e) => e.codigo_evento === "FINAL_TURNO");
+    if (lastFimOp && (!lastFimTurno || lastFimOp.seq > lastFimTurno.seq)) {
       t.operacao_encerrada = true;
+      t.fase_pos_fim = false;
+      t.ciclo_ativo = false;
+    } else if (lastFinalizar && lastFimOp && lastFimOp.seq > lastFinalizar.seq) {
+      t.operacao_encerrada = true;
+      t.fase_pos_fim = false;
     } else if (t.operacao_encerrada == null) {
       t.operacao_encerrada = false;
     }
+    const fechado =
+      (ciclos || []).find((c) => c.status === "FINALIZADO") || (last?.status === "FINALIZADO" ? last : null);
+    if (fechado) t.id_ciclo_fechado = fechado.id;
   } catch (e) {
     console.warn("hydrate ciclo", e);
   }
@@ -892,6 +931,7 @@ async function continuarTurnoSalvo(opts = {}) {
   const { reconcileToast = true, showToast = true, autoBoot = false } = opts;
   refreshTurnExigeTalhao();
   await hydrateTurnCiclo(turn);
+  normalizarEstadoTurno();
   const evs = await eventosDoTurno(turn);
   const emJornada = turnoEmJornadaAtiva(turn, evs);
   if (emJornada && turn.estado_jornada !== "OPERACAO_ATIVA") {
@@ -1231,9 +1271,11 @@ function refreshPosCicloUI() {
     return;
   }
   if (turn.operacao_encerrada) {
-    $("posCicloHint").textContent =
-      "Serviço no campo encerrado — retorno à sede (se houver) e Fim turno.";
-    $("btnInsumosPosFim").classList.add("hidden");
+    const exIn = operacaoExigeInsumo();
+    $("posCicloHint").textContent = exIn
+      ? "Serviço encerrado — lance insumos se faltar, depois «Fim turno»."
+      : "Serviço no campo encerrado — «Fim turno».";
+    $("btnInsumosPosFim").classList.toggle("hidden", !exIn);
     $("btnSemInsumoTalhao").classList.add("hidden");
     $("btnProximoTalhao").classList.add("hidden");
     return;
@@ -1397,12 +1439,14 @@ function renderEventButtons() {
       }
     }
     if (b.codigo === "LANCAMENTO_INSUMOS") {
-      if (campoEncerrado) {
-        btn.disabled = true;
-        btn.innerHTML = `${b.label}<small>Serviço já encerrado</small>`;
-      } else if (turn.ciclo_ativo !== false && !turn.fase_pos_fim) {
+      if (!podeLancarInsumos()) {
         btn.disabled = true;
         btn.innerHTML = `${b.label}<small>Após «Finalizar talhão»</small>`;
+      } else if (campoEncerrado) {
+        btn.disabled = false;
+        cls += " highlight";
+        btn.className = cls;
+        btn.innerHTML = `${b.label}<small>Opcional — após fim da operação</small>`;
       }
     }
     if (b.codigo === "FIM_OPERACAO") {
@@ -1456,18 +1500,21 @@ function renderEventButtons() {
         btn.innerHTML = `${b.label}<small>Use «Fim operação» antes do retorno</small>`;
       }
     }
-    if (b.codigo === "FINAL_TURNO" && !podeEncerrarTurno()) {
-      btn.disabled = true;
-      if (cicloPendenteFinalizarTalhao()) {
-        btn.innerHTML = `${b.label}<small>Finalize o talhão primeiro</small>`;
-      } else if (etapaInsumosPendente()) {
-        btn.innerHTML = `${b.label}<small>Lance os insumos do talhão</small>`;
-      } else if (!campoEncerrado) {
-        btn.innerHTML = `${b.label}<small>Use «Fim operação» para encerrar o serviço</small>`;
-      } else if (turnoExigeDeslocRetorno() && !turn.desloc_retorno_concluido) {
-        btn.innerHTML = `${b.label}<small>Retorno sede ou toque 2x p/ fim no campo</small>`;
-        btn.disabled = false;
-        btn.className = cls.replace(" highlight", "");
+    if (b.codigo === "FINAL_TURNO") {
+      if (podeEncerrarTurno()) {
+        cls += " highlight";
+        btn.className = cls;
+        btn.innerHTML = `${b.label}<small>${etapaInsumosPendente() ? "Insumos opcionais — pode encerrar" : hint}</small>`;
+      } else {
+        btn.disabled = true;
+        if (cicloPendenteFinalizarTalhao()) {
+          btn.innerHTML = `${b.label}<small>Finalize o talhão primeiro</small>`;
+        } else if (!campoEncerrado) {
+          btn.innerHTML = `${b.label}<small>Use «Fim operação» para encerrar o serviço</small>`;
+        } else if (turnoExigeDeslocRetorno() && !retornoSedeOk()) {
+          btn.innerHTML = `${b.label}<small>Registre retorno sede ou toque 2× aqui</small>`;
+          btn.disabled = false;
+        }
       }
     }
     btn.addEventListener("click", () => onEventClick(b.codigo));
@@ -1520,7 +1567,7 @@ async function aposFecharTalhao() {
 
 async function onEventClick(codigo) {
   if (codigo === "LANCAMENTO_INSUMOS") {
-    if (turn.ciclo_ativo !== false && !turn.fase_pos_fim) {
+    if (!podeLancarInsumos()) {
       toast("Ordem: 1 Finalizar talhão → 2 Insumos → 3 Próximo talhão");
       return;
     }
@@ -1649,8 +1696,7 @@ async function onEventClick(codigo) {
       toast("Use «Finalizar talhão» antes de encerrar o turno.");
       return;
     }
-    if (etapaInsumosPendente()) {
-      toast("Lance os insumos do talhão antes do fim do turno.");
+    if (etapaInsumosPendente() && !window.confirm("Insumos ainda não lançados neste talhão.\n\nOK = encerrar turno mesmo assim\nCancelar = voltar")) {
       return;
     }
     if (!turn.operacao_encerrada) {
@@ -2086,6 +2132,7 @@ async function finishDeslocAndCiclo() {
 }
 
 function showJourney() {
+  normalizarEstadoTurno();
   refreshTurnExigeTalhao();
   renderJourneyHead();
   renderEventButtons();
